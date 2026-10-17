@@ -40,16 +40,19 @@ function App() {
   const [isZakatPaidOpen, setIsZakatPaidOpen] = useState(false);
   const [isLoansOpen, setIsLoansOpen] = useState(false);
 
+  // Dashboard Historical Toggle
+  const [includeHistorical, setIncludeHistorical] = useState(false);
+
   useEffect(() => {
     initSettings().then(() => loadData());
   }, [loadData]);
 
   if (isLoading) return <div className="p-10 text-center text-gray-500">Loading Finance ERP...</div>;
 
-  const buckets = getBucketBalances(selectedMonth);
-  const zakat = calculateZakat(selectedMonth);
-  const { totals, grandTotal } = getCategoryTotals(selectedMonth);
-  const monthTransactions = getMonthTransactions(selectedMonth);
+  const buckets = getBucketBalances(selectedMonth); // Always live
+  const zakat = calculateZakat(selectedMonth); // Always live
+  const { totals, grandTotal } = getCategoryTotals(selectedMonth, includeHistorical);
+  const monthTransactions = getMonthTransactions(selectedMonth, includeHistorical);
   const totalDebt = getTotalDebtPayable();
   const allCategories = getCategories();
 
@@ -114,6 +117,18 @@ function App() {
       <div className="p-3 max-w-4xl mx-auto overflow-hidden">
         {activeTab === 'dashboard' && (
           <>
+            <div className="flex justify-end mb-2">
+              <label className="flex items-center gap-2 text-xs text-gray-600 select-none bg-white px-3 py-1.5 rounded-lg shadow-sm">
+                <input
+                  type="checkbox"
+                  checked={includeHistorical}
+                  onChange={(e) => setIncludeHistorical(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                Include Historical
+              </label>
+            </div>
+
             <ZakatCard
               zakat={zakat}
               selectedMonth={selectedMonth}
@@ -125,7 +140,10 @@ function App() {
               onManage={() => setIsLoansOpen(true)}
             />
             <CategoryTotals totals={totals} grandTotal={grandTotal} />
+            
+            {/* Bucket balances remain live-only */}
             <BucketBalances buckets={buckets} />
+            
             <RecentTransactions
               transactions={monthTransactions}
               onEdit={handleEdit}

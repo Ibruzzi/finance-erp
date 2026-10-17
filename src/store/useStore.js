@@ -203,12 +203,12 @@ export const useStore = create((set, get) => ({
     };
   },
 
-  getCategoryTotals: (monthString) => {
+  getCategoryTotals: (monthString, includeHistorical = false) => {
     const { transactions } = get();
     const monthExpenses = transactions.filter(t =>
       t.date.startsWith(monthString) &&
       t.type === 'Expense' &&
-      !t.is_historical
+      (includeHistorical || !t.is_historical)
     );
 
     const totals = {};
@@ -226,10 +226,10 @@ export const useStore = create((set, get) => ({
     return { totals: sortedTotals, grandTotal };
   },
 
-  getMonthTransactions: (monthString) => {
+  getMonthTransactions: (monthString, includeHistorical = false) => {
     const { transactions } = get();
     return transactions
-      .filter(t => t.date.startsWith(monthString) && !t.is_historical)
+      .filter(t => t.date.startsWith(monthString) && (includeHistorical || !t.is_historical))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
