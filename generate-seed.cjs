@@ -6,37 +6,6 @@ const path = require('path');
 const INPUT_DIR = path.resolve(__dirname, 'import-files');
 const OUTPUT_FILE = path.resolve(__dirname, 'src', 'db', 'seedData.js');
 
-const MONTH_MAP = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
-
-function monthNumberFromSheetName(sheetName) {
-  const key = String(sheetName).trim().toLowerCase();
-  if (MONTH_MAP[key]) return MONTH_MAP[key];
-  const first = key.split(/[\s_\-]+/)[0];
-  if (MONTH_MAP[first]) return MONTH_MAP[first];
-  for (const name of Object.keys(MONTH_MAP)) {
-    if (key.startsWith(name)) return MONTH_MAP[name];
-  }
-  return null;
-}
-
-function cleanCategory(v) {
-  const lower = String(v || '').toLowerCase().trim();
-  if (lower === 'personal') return 'Personal';
-  if (lower === 'family') return 'Family';
-  if (lower === 'boalhadhage' || lower === 'boalhadhadige' || lower === 'boalhadhadigey') return 'Boalhadhage';
-  if (lower === 'income') return 'Income';
-  return null;
-}
-
-function coerceDay(v) {
-  if (typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 31) return v;
-  if (typeof v === 'string') {
-    const n = parseInt(v.trim(), 10);
-    if (!isNaN(n) && n >= 1 && n <= 31) return n;
-  }
-  return null;
-}
-
 const allRows = [];
 
 if (!fs.existsSync(INPUT_DIR)) {
@@ -45,73 +14,57 @@ if (!fs.existsSync(INPUT_DIR)) {
 }
 
 const files = fs.readdirSync(INPUT_DIR).filter(f => f.endsWith('.xlsx'));
-console.log(`Found ${files.length} .xlsx files in import-files.`);
-
-if (files.length === 0) {
-  console.error(`❌ Error: No .xlsx files found in ${INPUT_DIR}`);
-  process.exit(1);
-}
+console.log(`Found ${files.length} .xlsx files.`);
 
 files.forEach(file => {
-  // Extract year from filename (e.g., "2023.xlsx" -> 2023)
-  const yearMatch = file.match(/\d{4}/);
-  const YEAR = yearMatch ? parseInt(yearMatch[0]) : new Date().getFullYear();
-  
-  console.log(`Processing ${file} (Year: ${YEAR})...`);
+  console.log(`Processing ${file}...`);
   const workbook = XLSX.readFile(path.join(INPUT_DIR, file));
   
+  // Process every sheet, just in case
   workbook.SheetNames.forEach(sheetName => {
-    const monthNum = monthNumberFromSheetName(sheetName);
-    if (!monthNum) return; // Skip non-month sheets
-
     const sheet = workbook.Sheets[sheetName];
-    const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true });
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
 
-    for (let i = 0; i < aoa.length; i++) {
-      const row = aoa[i];
-      if (!row) continue;
+    rows.forEach(row => {
+      const dateVal = row['Date'];
+      const category = row['Category'];
+      const subcategory = row['Subcategory'];
+      const amount = row['Amount'];
+      const currency = row['Currency'] || 'MVR';
+      const notes = row['notes'] || '';
 
-      const dateCell = row[0];
-      const categoryCell = row[1];
-      const subcategoryCell = row[2];
-      const amountCell = row[3];
+      // Skip invalid rows
+      if (!dateVal || !category || amount === undefined || amount === null || amount === 0) return;
 
-      if (typeof dateCell === 'string' && dateCell.trim().toLowerCase() === 'date') continue;
+      // Parse the ISO date string safely
+      const parsedDate = new Date(dateVal);
+      if (isNaN(parsedDate.getTime())) return;
 
-      const day = coerceDay(dateCell);
-      const category = cleanCategory(categoryCell);
+      const type = String(category).toLowerCase().includes('income') ? 'Income' : 'Expense';
       
-      if (day === null || !category || typeof amountCell !== 'number' || amountCell === 0) continue;
-
-      const isoDate = `${YEAR}-${String(monthNum).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const subcategory = String(subcategoryCell || '').trim();
-      
-      const type = category.toLowerCase().includes('income') ? 'Income' : 'Expense';
-      const isServiceCharge = type === 'Income' && subcategory.toLowerCase() === 'service charge';
-      
-      const currency = isServiceCharge ? 'USD' : 'MVR';
       const rate = currency === 'USD' ? 15.42 : 1;
-      const amount_mvr = currency === 'USD' ? amountCell * rate : amountCell;
+      const amount_mvr = currency === 'USD' ? Number(amount) * rate : Number(amount);
 
+      // Default bucket mapping
       let bucket = 'Discretionary';
       if (type === 'Income') bucket = 'Income';
       else if (['Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery', 'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa'].includes(subcategory)) bucket = 'Essential';
       else if (['Debt', 'Pension', 'Zakat', 'Loan Repayment'].includes(subcategory)) bucket = 'Financial/Obligatory';
 
       allRows.push({
-        date: new Date(isoDate).toISOString(),
-        category,
-        subcategory,
-        amount_original: amountCell,
+        date: parsedDate.toISOString(),
+        category: String(category).trim(),
+        subcategory: String(subcategory || '').trim(),
+        amount_original: Number(amount),
         currency,
         exchange_rate_at_time: rate,
         amount_mvr,
         type,
         bucket,
         is_historical: true,
-        notes: `${YEAR} imported via seed`
+        notes: String(notes).trim()
       });
-    }
+    });
   });
 });
 
