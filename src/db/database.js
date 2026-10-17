@@ -1,14 +1,8 @@
 import Dexie from 'dexie';
+import { SEED_DATA } from './seedData'; // <-- Import the generated data
 
 export const db = new Dexie('FinanceERP');
 
-// ============================================================
-// SCHEMA
-// NOTE: The local browser DB was already at version 20 from an
-// earlier session. Dexie can upgrade but never downgrade, so we
-// declare 20 as the current version here. Do NOT change this
-// number unless you genuinely need to add/remove a table.
-// ============================================================
 db.version(200).stores({
   transactions: '++id, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes',
   settings: 'key',
@@ -19,11 +13,8 @@ db.version(200).stores({
   bucket_map: '++id, category, subcategory, bucket'
 });
 
-// ============================================================
-// DEFAULT BUCKET MAP
-// ============================================================
 const DEFAULT_BUCKET_MAP = [
-  // ---- Personal ----
+  // ... (Keep your existing DEFAULT_BUCKET_MAP array exactly as it is) ...
   { category: 'Personal', subcategory: 'Book', bucket: 'Discretionary' },
   { category: 'Personal', subcategory: 'Wardrobe', bucket: 'Discretionary' },
   { category: 'Personal', subcategory: 'Cosmetics', bucket: 'Discretionary' },
@@ -53,8 +44,6 @@ const DEFAULT_BUCKET_MAP = [
   { category: 'Personal', subcategory: 'Hotel Bookings', bucket: 'Discretionary' },
   { category: 'Personal', subcategory: 'Room Cleaning', bucket: 'Discretionary' },
   { category: 'Personal', subcategory: 'Samu', bucket: 'Essential' },
-  
-  // ---- Boalhadhage ----
   { category: 'Boalhadhage', subcategory: 'Appliances', bucket: 'Discretionary' },
   { category: 'Boalhadhage', subcategory: 'Cements/Building', bucket: 'Discretionary' },
   { category: 'Boalhadhage', subcategory: 'Furniture', bucket: 'Discretionary' },
@@ -77,8 +66,6 @@ const DEFAULT_BUCKET_MAP = [
   { category: 'Boalhadhage', subcategory: 'Waste mngmnt.', bucket: 'Essential' },
   { category: 'Boalhadhage', subcategory: 'Medical', bucket: 'Essential' },
   { category: 'Boalhadhage', subcategory: 'Maintenance', bucket: 'Essential' },
-  
-  // ---- Family ----
   { category: 'Family', subcategory: 'Aisu', bucket: 'Discretionary' },
   { category: 'Family', subcategory: 'Ahamadhu', bucket: 'Discretionary' },
   { category: 'Family', subcategory: 'Ali', bucket: 'Discretionary' },
@@ -92,8 +79,6 @@ const DEFAULT_BUCKET_MAP = [
   { category: 'Family', subcategory: 'Mamma', bucket: 'Discretionary' },
   { category: 'Family', subcategory: 'Bappa', bucket: 'Essential' },
   { category: 'Family', subcategory: 'Dhattha', bucket: 'Discretionary' },
-  
-  // ---- Income ----
   { category: 'Income', subcategory: 'Salary/Wages', bucket: 'Income' },
   { category: 'Income', subcategory: 'Service charge', bucket: 'Income' },
   { category: 'Income', subcategory: 'Refunds/Reimbursements', bucket: 'Income' },
@@ -102,9 +87,6 @@ const DEFAULT_BUCKET_MAP = [
   { category: 'Income', subcategory: 'Savings Fund', bucket: 'Income' },
 ];
 
-// ============================================================
-// SEED DEFAULT SETTINGS + BUCKET MAP
-// ============================================================
 export const initSettings = async () => {
   const count = await db.settings.count();
   if (count === 0) {
@@ -138,5 +120,12 @@ export const initSettings = async () => {
   const mapCount = await db.bucket_map.count();
   if (mapCount === 0) {
     await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP);
+  }
+
+  // 🚀 SEED THE DATABASE
+  const txCount = await db.transactions.count();
+  if (txCount === 0 && SEED_DATA.length > 0) {
+    console.log(`Empty database detected. Seeding ${SEED_DATA.length} historical rows...`);
+    await db.transactions.bulkAdd(SEED_DATA);
   }
 };
