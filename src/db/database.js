@@ -1,5 +1,5 @@
 import Dexie from 'dexie';
-import { SEED_DATA } from './seedData'; // <-- Import the generated data
+import { SEED_DATA } from './seedData';
 
 export const db = new Dexie('FinanceERP');
 
@@ -11,6 +11,41 @@ db.version(200).stores({
   zakat_log: '++id, month, total_savings, zakat_due, zakat_paid',
   exchange_rates: '++id, date_set, rate',
   bucket_map: '++id, category, subcategory, bucket'
+});
+
+// Bump version to add sync fields
+db.version(201).stores({
+  transactions: '++id, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
+  settings: 'key, syncStatus, updated_at, deleted',
+  loans: '++id, name, total_amount, start_date, notes, syncStatus, updated_at, deleted',
+  loan_payments: '++id, loan_id, date, amount, transaction_id',
+  zakat_log: '++id, month, total_savings, zakat_due, zakat_paid',
+  exchange_rates: '++id, date_set, rate',
+  bucket_map: '++id, category, subcategory, bucket, syncStatus, updated_at, deleted'
+}).upgrade(tx => {
+  // Upgrade existing data to be marked as 'pending' so it gets pushed on first sync
+  return Promise.all([
+    tx.table('transactions').toCollection().modify(item => {
+      item.syncStatus = item.syncStatus || 'pending';
+      item.updated_at = item.updated_at || new Date().toISOString();
+      item.deleted = item.deleted || false;
+    }),
+    tx.table('loans').toCollection().modify(item => {
+      item.syncStatus = item.syncStatus || 'pending';
+      item.updated_at = item.updated_at || new Date().toISOString();
+      item.deleted = item.deleted || false;
+    }),
+    tx.table('bucket_map').toCollection().modify(item => {
+      item.syncStatus = item.syncStatus || 'pending';
+      item.updated_at = item.updated_at || new Date().toISOString();
+      item.deleted = item.deleted || false;
+    }),
+    tx.table('settings').toCollection().modify(item => {
+      item.syncStatus = item.syncStatus || 'pending';
+      item.updated_at = item.updated_at || new Date().toISOString();
+      item.deleted = item.deleted || false;
+    })
+  ]);
 });
 
 const DEFAULT_BUCKET_MAP = [
@@ -90,16 +125,16 @@ export const initSettings = async () => {
   const count = await db.settings.count();
   if (count === 0) {
     await db.settings.bulkPut([
-      { key: 'essential_pct', value: 40 },
-      { key: 'discretionary_pct', value: 10 },
-      { key: 'financial_pct', value: 15 },
-      { key: 'savings_pct', value: 35 },
-      { key: 'nisab_threshold', value: 10000 },
-      { key: 'zakat_rate', value: 2.5 },
-      { key: 'current_usd_rate', value: 15.42 },
-      { key: 'debt_receivable', value: 0 },
-      { key: 'bank_balance_override', value: '' },
-      { key: 'prev_year_balances', value: {} }
+      { key: 'essential_pct', value: 40, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'discretionary_pct', value: 10, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'financial_pct', value: 15, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'savings_pct', value: 35, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'nisab_threshold', value: 10000, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'zakat_rate', value: 2.5, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'current_usd_rate', value: 15.42, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'debt_receivable', value: 0, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'bank_balance_override', value: '', syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false },
+      { key: 'prev_year_balances', value: {}, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false }
     ]);
   } else {
     const existing = await db.settings.toArray();
@@ -111,20 +146,31 @@ export const initSettings = async () => {
     ];
     for (const d of defaults) {
       if (!existingKeys.includes(d.key)) {
-        await db.settings.put(d);
+        await db.settings.put({ ...d, syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false });
       }
     }
   }
 
   const mapCount = await db.bucket_map.count();
   if (mapCount === 0) {
-    await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP);
+    const mapped = DEFAULT_BUCKET_MAP.map(b => ({
+      ...b,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false
+    }));
+    await db.bucket_map.bulkAdd(mapped);
   }
 
-  // 🚀 SEED THE DATABASE
   const txCount = await db.transactions.count();
   if (txCount === 0 && SEED_DATA.length > 0) {
     console.log(`Empty database detected. Seeding ${SEED_DATA.length} historical rows...`);
-    await db.transactions.bulkAdd(SEED_DATA);
+    const seeded = SEED_DATA.map(t => ({
+      ...t,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false
+    }));
+    await db.transactions.bulkAdd(seeded);
   }
 };

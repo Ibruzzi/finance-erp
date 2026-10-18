@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store/useStore';
 import { initSettings } from './db/database';
-import { Plus, CreditCard, Settings } from 'lucide-react';
+import { Plus, CreditCard, Settings, RefreshCw } from 'lucide-react';
+import { supabase } from './lib/supabaseClient';
+import { syncAll } from './lib/sync';
+import { AuthGate } from './components/AuthGate';
 
 import { MonthPicker } from './components/MonthPicker';
 import { AppTabs } from './components/AppTabs';
@@ -25,13 +28,14 @@ const TABS = [
   { key: 'range', label: 'Range' },
 ];
 
-function App() {
+function MainApp() {
   const {
     loadData, isLoading, settings, getBucketBalances, getCategoryTotals,
     calculateZakat, addTransaction, updateTransaction, deleteTransaction,
     getMonthTransactions, bucketMap, getBucketFromMap, getSubcategoriesFor,
     getCategories, updateSetting, loans, getLoanPaid, getTotalDebtPayable
   } = useStore();
+  
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -39,18 +43,24 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isZakatPaidOpen, setIsZakatPaidOpen] = useState(false);
   const [isLoansOpen, setIsLoansOpen] = useState(false);
-
-  // Dashboard Historical Toggle
   const [includeHistorical, setIncludeHistorical] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   useEffect(() => {
     initSettings().then(() => loadData());
   }, [loadData]);
 
+  const handleManualSync = async () => {
+    setIsSyncing(true);
+    await syncAll();
+    await loadData();
+    setIsSyncing(false);
+  };
+
   if (isLoading) return <div className="p-10 text-center text-gray-500">Loading Finance ERP...</div>;
 
-  const buckets = getBucketBalances(selectedMonth); // Always live
-  const zakat = calculateZakat(selectedMonth); // Always live
+  const buckets = getBucketBalances(selectedMonth);
+  const zakat = calculateZakat(selectedMonth);
   const { totals, grandTotal } = getCategoryTotals(selectedMonth, includeHistorical);
   const monthTransactions = getMonthTransactions(selectedMonth, includeHistorical);
   const totalDebt = getTotalDebtPayable();
@@ -90,7 +100,15 @@ function App() {
             <div className="flex-1 min-w-0">
               <MonthPicker selectedMonth={selectedMonth} onChange={setSelectedMonth} />
             </div>
-            <button
+            <button 
+              onClick={handleManualSync}
+              disabled={isSyncing}
+              className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0"
+              title="Sync Now"
+            >
+              <RefreshCw size={20} className={isSyncing ? "animate-spin" : ""} />
+            </button>
+            <button 
               onClick={() => setIsLoansOpen(true)}
               className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0 relative"
               title="Loans"
@@ -102,7 +120,7 @@ function App() {
                 </span>
               )}
             </button>
-            <button
+            <button 
               onClick={() => setIsSettingsOpen(true)}
               className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0"
             >
@@ -140,10 +158,7 @@ function App() {
               onManage={() => setIsLoansOpen(true)}
             />
             <CategoryTotals totals={totals} grandTotal={grandTotal} />
-            
-            {/* Bucket balances remain live-only */}
             <BucketBalances buckets={buckets} />
-            
             <RecentTransactions
               transactions={monthTransactions}
               onEdit={handleEdit}
@@ -153,9 +168,7 @@ function App() {
         )}
 
         {activeTab === 'insights' && <InsightsTab selectedMonth={selectedMonth} />}
-
         {activeTab === 'summary' && <YearlySummary />}
-
         {activeTab === 'range' && <RangeReport allCategories={allCategories} />}
       </div>
 
@@ -217,6 +230,14 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function App() {
+  return (
+    <AuthGate>
+      <MainApp />
+    </AuthGate>
   );
 }
 

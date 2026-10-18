@@ -26,7 +26,13 @@ export const useStore = create((set, get) => ({
   },
 
   updateSetting: async (key, value) => {
-    await db.settings.put({ key, value });
+    await db.settings.put({ 
+      key, 
+      value, 
+      syncStatus: 'pending', 
+      updated_at: new Date().toISOString(), 
+      deleted: false 
+    });
     set((state) => ({
       settings: { ...state.settings, [key]: value }
     }));
@@ -48,16 +54,28 @@ export const useStore = create((set, get) => ({
     );
 
     if (existing) {
-      await db.bucket_map.update(existing.id, { bucket: newBucket });
+      await db.bucket_map.update(existing.id, { 
+        bucket: newBucket,
+        syncStatus: 'pending',
+        updated_at: new Date().toISOString()
+      });
       set((state) => ({
         bucketMap: state.bucketMap.map(r =>
-          r.id === existing.id ? { ...r, bucket: newBucket } : r
+          r.id === existing.id ? { ...r, bucket: newBucket, syncStatus: 'pending', updated_at: new Date().toISOString() } : r
         )
       }));
     } else {
-      const id = await db.bucket_map.add({ category, subcategory, bucket: newBucket });
+      const newRow = { 
+        category, 
+        subcategory, 
+        bucket: newBucket,
+        syncStatus: 'pending',
+        updated_at: new Date().toISOString(),
+        deleted: false
+      };
+      const id = await db.bucket_map.add(newRow);
       set((state) => ({
-        bucketMap: [...state.bucketMap, { id, category, subcategory, bucket: newBucket }]
+        bucketMap: [...state.bucketMap, { ...newRow, id }]
       }));
     }
   },
@@ -65,40 +83,61 @@ export const useStore = create((set, get) => ({
   getSubcategoriesFor: (category) => {
     const { bucketMap } = get();
     return bucketMap
-      .filter(r => r.category === category)
+      .filter(r => r.category === category && !r.deleted)
       .map(r => r.subcategory);
   },
 
   getCategories: () => {
     const { bucketMap } = get();
-    return [...new Set(bucketMap.map(r => r.category))];
+    return [...new Set(bucketMap.filter(r => !r.deleted).map(r => r.category))];
   },
 
   // ============ LOANS ============
   addLoan: async (loanData) => {
-    const id = await db.loans.add(loanData);
+    const newLoan = {
+      ...loanData,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false
+    };
+    const id = await db.loans.add(newLoan);
     set((state) => ({
-      loans: [...state.loans, { ...loanData, id }]
+      loans: [...state.loans, { ...newLoan, id }]
     }));
   },
 
   updateLoan: async (id, updates) => {
-    await db.loans.update(id, updates);
+    const updateData = {
+      ...updates,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString()
+    };
+    await db.loans.update(id, updateData);
     set((state) => ({
-      loans: state.loans.map(l => l.id === id ? { ...l, ...updates } : l)
+      loans: state.loans.map(l => l.id === id ? { ...l, ...updateData } : l)
     }));
   },
 
   deleteLoan: async (id) => {
-    await db.loans.delete(id);
+    await db.loans.update(id, { 
+      deleted: true, 
+      syncStatus: 'pending', 
+      updated_at: new Date().toISOString() 
+    });
+    
     const linked = get().transactions.filter(t => t.loan_id === id);
     for (const t of linked) {
-      await db.transactions.update(t.id, { loan_id: null });
+      await db.transactions.update(t.id, { 
+        loan_id: null,
+        syncStatus: 'pending',
+        updated_at: new Date().toISOString()
+      });
     }
+    
     set((state) => ({
       loans: state.loans.filter(l => l.id !== id),
       transactions: state.transactions.map(t =>
-        t.loan_id === id ? { ...t, loan_id: null } : t
+        t.loan_id === id ? { ...t, loan_id: null, syncStatus: 'pending' } : t
       )
     }));
   },
@@ -109,7 +148,8 @@ export const useStore = create((set, get) => ({
       .filter(t =>
         t.loan_id === loanId &&
         t.type === 'Expense' &&
-        !t.is_historical
+        !t.is_historical &&
+        !t.deleted
       )
       .reduce((sum, t) => sum + t.amount_mvr, 0);
   },
@@ -118,6 +158,7 @@ export const useStore = create((set, get) => ({
     const { loans } = get();
     let total = 0;
     for (const loan of loans) {
+      if (loan.deleted) continue;
       const paid = get().getLoanPaid(loan.id);
       total += Math.max(0, (loan.total_amount || 0) - paid);
     }
@@ -140,6 +181,9 @@ export const useStore = create((set, get) => ({
       exchange_rate_at_time: currentRate,
       is_historical: false,
       date: transactionData.date || new Date().toISOString(),
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false
     };
 
     const id = await db.transactions.add(newTransaction);
@@ -161,7 +205,14 @@ export const useStore = create((set, get) => ({
       amount_mvr = amount_mvr * currentRate;
     }
 
-    const updated = { ...existing, ...updates, amount_mvr, exchange_rate_at_time: currentRate };
+    const updated = { 
+      ...existing, 
+      ...updates, 
+      amount_mvr, 
+      exchange_rate_at_time: currentRate,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString()
+    };
 
     await db.transactions.put(updated);
 
@@ -171,7 +222,11 @@ export const useStore = create((set, get) => ({
   },
 
   deleteTransaction: async (id) => {
-    await db.transactions.delete(id);
+    await db.transactions.update(id, { 
+      deleted: true, 
+      syncStatus: 'pending', 
+      updated_at: new Date().toISOString() 
+    });
     set((state) => ({
       transactions: state.transactions.filter(t => t.id !== id)
     }));
@@ -180,7 +235,7 @@ export const useStore = create((set, get) => ({
   // ============ CALCULATIONS ============
   getBucketBalances: (monthString) => {
     const { transactions, settings } = get();
-    const monthTransactions = transactions.filter(t => t.date.startsWith(monthString) && !t.is_historical);
+    const monthTransactions = transactions.filter(t => t.date.startsWith(monthString) && !t.is_historical && !t.deleted);
 
     const totalIncome = monthTransactions
       .filter(t => t.type === 'Income')
@@ -208,10 +263,10 @@ export const useStore = create((set, get) => ({
     const monthExpenses = transactions.filter(t =>
       t.date.startsWith(monthString) &&
       t.type === 'Expense' &&
+      !t.deleted &&
       (includeHistorical || !t.is_historical)
     );
 
-    // Group by category, then by subcategory within each category.
     const byCategory = {};
 
     monthExpenses.forEach(t => {
@@ -247,7 +302,7 @@ export const useStore = create((set, get) => ({
   getMonthTransactions: (monthString, includeHistorical = false) => {
     const { transactions } = get();
     return transactions
-      .filter(t => t.date.startsWith(monthString) && (includeHistorical || !t.is_historical))
+      .filter(t => t.date.startsWith(monthString) && !t.deleted && (includeHistorical || !t.is_historical))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
@@ -261,7 +316,8 @@ export const useStore = create((set, get) => ({
         t.category === 'Personal' &&
         t.subcategory === 'Zakat' &&
         t.date.startsWith(monthString) &&
-        !t.is_historical
+        !t.is_historical &&
+        !t.deleted
       )
       .reduce((sum, t) => sum + t.amount_mvr, 0);
 
@@ -270,10 +326,10 @@ export const useStore = create((set, get) => ({
       bankBalance = parseFloat(settings.bank_balance_override);
     } else {
       const totalIncome = transactions
-        .filter(t => t.type === 'Income' && !t.is_historical)
+        .filter(t => t.type === 'Income' && !t.is_historical && !t.deleted)
         .reduce((sum, t) => sum + t.amount_mvr, 0);
       const totalExpenses = transactions
-        .filter(t => t.type === 'Expense' && !t.is_historical)
+        .filter(t => t.type === 'Expense' && !t.is_historical && !t.deleted)
         .reduce((sum, t) => sum + t.amount_mvr, 0);
       bankBalance = totalIncome - totalExpenses;
     }
@@ -337,6 +393,7 @@ export const useStore = create((set, get) => ({
 
     return transactions
       .filter(t => {
+        if (t.deleted) return false;
         if (!includeHistorical && t.is_historical) return false;
         if (type !== 'All' && t.type !== type) return false;
         if (category && t.category !== category) return false;
@@ -388,7 +445,7 @@ export const useStore = create((set, get) => ({
   getYearlySummary: (type = 'Expense') => {
     const { transactions } = get();
 
-    const txFiltered = transactions.filter(t => t.type === type);
+    const txFiltered = transactions.filter(t => t.type === type && !t.deleted);
 
     const yearSet = new Set();
     txFiltered.forEach(t => {
@@ -430,7 +487,7 @@ export const useStore = create((set, get) => ({
   getSubcategoryYearlySummary: (targetCategory, years, type = 'Expense') => {
     const { transactions } = get();
     
-    const catTx = transactions.filter(t => t.type === type && t.category === targetCategory);
+    const catTx = transactions.filter(t => t.type === type && t.category === targetCategory && !t.deleted);
 
     const subMap = {};
     catTx.forEach(t => {
