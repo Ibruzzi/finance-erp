@@ -14,14 +14,24 @@ export function AuthGate({ children }) {
     // Check active session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      if (session) triggerSync();
-      setLoading(false);
+      if (session) {
+        // If we have a session, trigger sync
+        triggerSync();
+      } else {
+        setLoading(false);
+      }
     });
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) triggerSync();
+    // Listen for auth changes (like clicking the magic link)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      console.log("Auth Event:", event);
+      if (event === 'SIGNED_IN') {
+        setSession(session);
+        // Force a reload to ensure the session is fully picked up by the browser
+        if (!window.location.hash.includes('access_token')) {
+          triggerSync();
+        }
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -30,11 +40,14 @@ export function AuthGate({ children }) {
   const triggerSync = async () => {
     setIsSyncing(true);
     try {
+      console.log("Starting Sync...");
       await syncAll();
+      console.log("Sync Complete!");
     } catch (e) {
-      console.error(e);
+      console.error("Sync failed:", e);
     } finally {
       setIsSyncing(false);
+      setLoading(false); // Only show the app after sync finishes!
     }
   };
 
@@ -44,7 +57,7 @@ export function AuthGate({ children }) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: window.location.origin, // Uses the current URL (localhost or vercel)
       },
     });
     if (error) {
@@ -54,10 +67,13 @@ export function AuthGate({ children }) {
     }
   };
 
-  if (loading) {
+  if (loading || isSyncing) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 text-blue-600">
-        <Loader2 className="animate-spin mr-2" /> Loading...
+      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-blue-600">
+        <Loader2 size={32} className="animate-spin mb-4" />
+        <p className="text-sm font-semibold text-gray-500">
+          {isSyncing ? "Syncing your data from the cloud..." : "Loading..."}
+        </p>
       </div>
     );
   }
@@ -103,15 +119,5 @@ export function AuthGate({ children }) {
     );
   }
 
-  return (
-    <div className="relative">
-      {/* Global Sync Indicator */}
-      {isSyncing && (
-        <div className="fixed top-0 left-0 w-full h-1 bg-blue-100 overflow-hidden z-[100]">
-          <div className="w-full h-full bg-blue-500 animate-pulse"></div>
-        </div>
-      )}
-      {children}
-    </div>
-  );
+  return <>{children}</>;
 }
