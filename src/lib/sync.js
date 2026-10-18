@@ -1,7 +1,9 @@
+// src/lib/sync.js
 import { supabase } from './supabaseClient';
 import { db } from '../db/database';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
+
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
 
@@ -20,7 +22,7 @@ export async function pushChanges() {
       // eslint-disable-next-line no-unused-vars
       const { id, syncStatus, uuid, ...rest } = row;
       return {
-        id: uuid, 
+        id: uuid,
         ...rest,
         user_id: session.user.id,
         updated_at: now
@@ -59,7 +61,7 @@ export async function pullChanges(isFirstSync = false) {
         .from(table)
         .select('*')
         .eq('user_id', session.user.id)
-        .range(0, 5000); // <--- THE FIX: Fetch up to 5,000 rows
+        .range(0, 5000); // <--- FIX 1: Fetch up to 5,000 rows (bypasses Supabase 1,000 default)
 
       if (!isFirstSync) {
         query = query.gt('updated_at', lastSync);
@@ -74,7 +76,7 @@ export async function pullChanges(isFirstSync = false) {
           const { user_id, id, ...rest } = row;
           return {
             ...rest,
-            uuid: id, 
+            uuid: id,
             syncStatus: 'synced'
           };
         });
@@ -83,13 +85,20 @@ export async function pullChanges(isFirstSync = false) {
           await db.settings.bulkPut(toPut);
         } else {
           if (isFirstSync) await db.table(table).clear();
-          await db.table(table).bulkPut(toPut); 
+          
+          // <--- FIX 2: CHUNKING to prevent mobile IndexedDB crashes/timeouts
+          const CHUNK_SIZE = 500;
+          for (let i = 0; i < toPut.length; i += CHUNK_SIZE) {
+            const chunk = toPut.slice(i, i + CHUNK_SIZE);
+            await db.table(table).bulkPut(chunk);
+          }
         }
       }
     } catch (err) {
       console.error(`Error pulling ${table}:`, err.message);
     }
   }
+
   setLastSync(now);
 }
 
@@ -98,10 +107,13 @@ export async function syncAll() {
   if (!session) return;
 
   const lastSync = getLastSync();
-  
+
   if (!lastSync) {
-    const { count, error } = await supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('user_id', session.user.id);
-    
+    const { count, error } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', session.user.id);
+
     if (!error && count === 0) {
       // Cloud empty, push local up
       await db.transactions.toCollection().modify({ syncStatus: 'pending' });
