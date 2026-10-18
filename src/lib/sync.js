@@ -20,7 +20,7 @@ export async function pushChanges() {
       // eslint-disable-next-line no-unused-vars
       const { id, syncStatus, uuid, ...rest } = row;
       return {
-        id: uuid, // <--- WE SEND THE UUID TO SUPABASE AS THE ID
+        id: uuid, 
         ...rest,
         user_id: session.user.id,
         updated_at: now
@@ -29,13 +29,11 @@ export async function pushChanges() {
 
     try {
       if (table === 'settings') {
-        // Upsert based on user_id and key
         const { error } = await supabase.from(table).upsert(toPush, { onConflict: 'user_id,key' });
         if (error) throw error;
         const syncedKeys = pending.map(p => p.key);
         await db.settings.where('key').anyOf(syncedKeys).modify({ syncStatus: 'synced' });
       } else {
-        // Upsert based on UUID (id)
         const { error } = await supabase.from(table).upsert(toPush);
         if (error) throw error;
         const syncedUuids = pending.map(p => p.uuid);
@@ -57,8 +55,15 @@ export async function pullChanges(isFirstSync = false) {
 
   for (const table of tables) {
     try {
-      let query = supabase.from(table).select('*').eq('user_id', session.user.id);
-      if (!isFirstSync) query = query.gt('updated_at', lastSync);
+      let query = supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', session.user.id)
+        .range(0, 5000); // <--- FORCES SUPABASE TO RETURN UP TO 5,000 ROWS
+
+      if (!isFirstSync) {
+        query = query.gt('updated_at', lastSync);
+      }
 
       const { data, error } = await query;
       if (error) throw error;
@@ -69,7 +74,7 @@ export async function pullChanges(isFirstSync = false) {
           const { user_id, id, ...rest } = row;
           return {
             ...rest,
-            uuid: id, // <--- WE MAP SUPABASE ID BACK TO LOCAL UUID
+            uuid: id, 
             syncStatus: 'synced'
           };
         });
