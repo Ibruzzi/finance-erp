@@ -2,11 +2,9 @@ import { supabase } from './supabaseClient';
 import { db } from '../db/database';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
-
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
 
-// Push pending local changes to Supabase
 export async function pushChanges() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
@@ -20,8 +18,9 @@ export async function pushChanges() {
 
     const toPush = pending.map(row => {
       // eslint-disable-next-line no-unused-vars
-      const { id, syncStatus, ...rest } = row;
+      const { id, syncStatus, uuid, ...rest } = row;
       return {
+        id: uuid, // <--- WE SEND THE UUID TO SUPABASE AS THE ID
         ...rest,
         user_id: session.user.id,
         updated_at: now
@@ -29,23 +28,18 @@ export async function pushChanges() {
     });
 
     try {
-      let error;
       if (table === 'settings') {
-        const { error: err } = await supabase.from(table).upsert(toPush, { onConflict: 'user_id,key' });
-        error = err;
-      } else {
-        const { error: err } = await supabase.from(table).insert(toPush);
-        error = err;
-      }
-
-      if (error) throw error;
-
-      if (table === 'settings') {
+        // Upsert based on user_id and key
+        const { error } = await supabase.from(table).upsert(toPush, { onConflict: 'user_id,key' });
+        if (error) throw error;
         const syncedKeys = pending.map(p => p.key);
         await db.settings.where('key').anyOf(syncedKeys).modify({ syncStatus: 'synced' });
       } else {
-        const syncedIds = pending.map(p => p.id);
-        await db.table(table).where('id').anyOf(syncedIds).modify({ syncStatus: 'synced' });
+        // Upsert based on UUID (id)
+        const { error } = await supabase.from(table).upsert(toPush);
+        if (error) throw error;
+        const syncedUuids = pending.map(p => p.uuid);
+        await db.table(table).where('uuid').anyOf(syncedUuids).modify({ syncStatus: 'synced' });
       }
     } catch (err) {
       console.error(`Error pushing ${table}:`, err.message);
@@ -53,7 +47,6 @@ export async function pushChanges() {
   }
 }
 
-// Pull remote changes to local
 export async function pullChanges(isFirstSync = false) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
@@ -64,11 +57,8 @@ export async function pullChanges(isFirstSync = false) {
 
   for (const table of tables) {
     try {
-      // If it's the first sync, we don't filter by date, we grab everything
       let query = supabase.from(table).select('*').eq('user_id', session.user.id);
-      if (!isFirstSync) {
-        query = query.gt('updated_at', lastSync);
-      }
+      if (!isFirstSync) query = query.gt('updated_at', lastSync);
 
       const { data, error } = await query;
       if (error) throw error;
@@ -76,9 +66,10 @@ export async function pullChanges(isFirstSync = false) {
       if (data && data.length > 0) {
         const toPut = data.map(row => {
           // eslint-disable-next-line no-unused-vars
-          const { user_id, ...rest } = row;
+          const { user_id, id, ...rest } = row;
           return {
             ...rest,
+            uuid: id, // <--- WE MAP SUPABASE ID BACK TO LOCAL UUID
             syncStatus: 'synced'
           };
         });
@@ -86,55 +77,42 @@ export async function pullChanges(isFirstSync = false) {
         if (table === 'settings') {
           await db.settings.bulkPut(toPut);
         } else {
-          if (isFirstSync) {
-            // On initial pull, WIPE the local table to avoid ID collisions
-            await db.table(table).clear();
-            await db.table(table).bulkAdd(toPut);
-          } else {
-            await db.table(table).bulkPut(toPut);
-          }
+          if (isFirstSync) await db.table(table).clear();
+          await db.table(table).bulkPut(toPut); 
         }
       }
     } catch (err) {
       console.error(`Error pulling ${table}:`, err.message);
     }
   }
-
   setLastSync(now);
 }
 
-// Full sync (push then pull)
 export async function syncAll() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
 
   const lastSync = getLastSync();
-  const isFirstSync = !lastSync;
-
-  if (isFirstSync) {
-    // Check if cloud has data
+  
+  if (!lastSync) {
     const { count, error } = await supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('user_id', session.user.id);
     
     if (!error && count === 0) {
-      // Cloud is empty. We are on the laptop. Push local data up!
-      console.log("Cloud is empty. Pushing local data to Supabase...");
+      // Cloud empty, push local up
       await db.transactions.toCollection().modify({ syncStatus: 'pending' });
       await db.settings.toCollection().modify({ syncStatus: 'pending' });
       await db.loans.toCollection().modify({ syncStatus: 'pending' });
       await db.bucket_map.toCollection().modify({ syncStatus: 'pending' });
-      
       await pushChanges();
       setLastSync(new Date().toISOString());
       return;
     } else {
-      // Cloud has data. Wipe local and pull it down.
-      console.log("Cloud has data. Pulling to local...");
+      // Cloud has data, pull down and WIPE local
       await pullChanges(true);
       return;
     }
   }
 
-  // Normal sync
   await pushChanges();
   await pullChanges(false);
 }

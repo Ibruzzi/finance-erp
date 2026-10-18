@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { db } from '../db/database';
+import { v4 as uuidv4 } from 'uuid'; // <-- ADDED IMPORT
 
 export const useStore = create((set, get) => ({
   transactions: [],
@@ -26,6 +27,7 @@ export const useStore = create((set, get) => ({
   },
 
   updateSetting: async (key, value) => {
+    // Settings use the key as the primary identifier, no uuid needed
     await db.settings.put({ 
       key, 
       value, 
@@ -69,6 +71,7 @@ export const useStore = create((set, get) => ({
         category, 
         subcategory, 
         bucket: newBucket,
+        uuid: uuidv4(), // <-- ADDED UUID
         syncStatus: 'pending',
         updated_at: new Date().toISOString(),
         deleted: false
@@ -96,6 +99,7 @@ export const useStore = create((set, get) => ({
   addLoan: async (loanData) => {
     const newLoan = {
       ...loanData,
+      uuid: uuidv4(), // <-- ADDED UUID
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
       deleted: false
@@ -181,6 +185,7 @@ export const useStore = create((set, get) => ({
       exchange_rate_at_time: currentRate,
       is_historical: false,
       date: transactionData.date || new Date().toISOString(),
+      uuid: uuidv4(), // <-- ADDED UUID
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
       deleted: false
