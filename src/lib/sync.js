@@ -59,7 +59,7 @@ export async function pullChanges(isFirstSync = false) {
         .from(table)
         .select('*')
         .eq('user_id', session.user.id)
-        .range(0, 5000); // <--- FORCES SUPABASE TO RETURN UP TO 5,000 ROWS
+        .range(0, 5000); // <--- THE FIX: Fetch up to 5,000 rows
 
       if (!isFirstSync) {
         query = query.gt('updated_at', lastSync);
