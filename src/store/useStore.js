@@ -211,19 +211,37 @@ export const useStore = create((set, get) => ({
       (includeHistorical || !t.is_historical)
     );
 
-    const totals = {};
+    // Group by category, then by subcategory within each category.
+    const byCategory = {};
+
     monthExpenses.forEach(t => {
-      if (!totals[t.category]) totals[t.category] = 0;
-      totals[t.category] += t.amount_mvr;
+      const cat = t.category || '(Uncategorized)';
+      const sub = t.subcategory || '(No subcategory)';
+
+      if (!byCategory[cat]) {
+        byCategory[cat] = { category: cat, amount: 0, subcategories: {} };
+      }
+      if (!byCategory[cat].subcategories[sub]) {
+        byCategory[cat].subcategories[sub] = { subcategory: sub, amount: 0, count: 0 };
+      }
+
+      byCategory[cat].amount += t.amount_mvr;
+      byCategory[cat].subcategories[sub].amount += t.amount_mvr;
+      byCategory[cat].subcategories[sub].count += 1;
     });
 
-    const sortedTotals = Object.entries(totals)
-      .map(([category, amount]) => ({ category, amount }))
+    const totals = Object.values(byCategory)
+      .map(c => ({
+        category: c.category,
+        amount: c.amount,
+        subcategories: Object.values(c.subcategories)
+          .sort((a, b) => b.amount - a.amount),
+      }))
       .sort((a, b) => b.amount - a.amount);
 
-    const grandTotal = sortedTotals.reduce((sum, item) => sum + item.amount, 0);
+    const grandTotal = totals.reduce((sum, item) => sum + item.amount, 0);
 
-    return { totals: sortedTotals, grandTotal };
+    return { totals, grandTotal };
   },
 
   getMonthTransactions: (monthString, includeHistorical = false) => {

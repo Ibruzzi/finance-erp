@@ -1,4 +1,4 @@
-// generate-seed.cjs
+  // generate-seed.cjs
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
@@ -69,9 +69,14 @@ files.forEach(file => {
 
       // Default bucket mapping
       let bucket = 'Discretionary';
-      if (type === 'Income') bucket = 'Income';
-      else if (['Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery', 'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa'].includes(subcategory)) bucket = 'Essential';
-      else if (['Debt', 'Pension', 'Zakat', 'Loan Repayment'].includes(subcategory)) bucket = 'Financial/Obligatory';
+
+      if (type === 'Income') {
+        bucket = 'Income';
+      } else if (['Debt', 'Pension', 'Zakat', 'Loan Repayment'].includes(subcategory)) {
+        bucket = 'Financial/Obligatory';
+      } else if (['Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery', 'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa'].includes(subcategory)) {
+        bucket = 'Essential';
+      }
 
       allRows.push({
         date: isoDate,
