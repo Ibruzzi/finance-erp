@@ -18,7 +18,6 @@ export async function pushChanges() {
     const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
     if (pending.length === 0) continue;
 
-    // Prepare for Supabase (remove local id, add user_id)
     const toPush = pending.map(row => {
       // eslint-disable-next-line no-unused-vars
       const { id, syncStatus, ...rest } = row;
@@ -32,28 +31,22 @@ export async function pushChanges() {
     try {
       let error;
       if (table === 'settings') {
-        // Settings has a unique constraint on (user_id, key), so we upsert
         const { error: err } = await supabase.from(table).upsert(toPush, { onConflict: 'user_id,key' });
         error = err;
       } else {
-        // For others, we insert as new rows.
         const { error: err } = await supabase.from(table).insert(toPush);
         error = err;
       }
 
       if (error) throw error;
 
-      // Mark as synced locally
       if (table === 'settings') {
-        // Settings uses 'key' as primary key
         const syncedKeys = pending.map(p => p.key);
         await db.settings.where('key').anyOf(syncedKeys).modify({ syncStatus: 'synced' });
       } else {
-        // Other tables use 'id'
         const syncedIds = pending.map(p => p.id);
         await db.table(table).where('id').anyOf(syncedIds).modify({ syncStatus: 'synced' });
       }
-
     } catch (err) {
       console.error(`Error pushing ${table}:`, err.message);
     }
@@ -61,7 +54,7 @@ export async function pushChanges() {
 }
 
 // Pull remote changes to local
-export async function pullChanges() {
+export async function pullChanges(isFirstSync = false) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
 
@@ -71,12 +64,13 @@ export async function pullChanges() {
 
   for (const table of tables) {
     try {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .eq('user_id', session.user.id)
-        .gt('updated_at', lastSync);
+      // If it's the first sync, we don't filter by date, we grab everything
+      let query = supabase.from(table).select('*').eq('user_id', session.user.id);
+      if (!isFirstSync) {
+        query = query.gt('updated_at', lastSync);
+      }
 
+      const { data, error } = await query;
       if (error) throw error;
 
       if (data && data.length > 0) {
@@ -92,11 +86,13 @@ export async function pullChanges() {
         if (table === 'settings') {
           await db.settings.bulkPut(toPut);
         } else {
-          // For other tables, clear out old records on initial sync to avoid ID collisions
-          if (!lastSync || lastSync === '1970-01-01T00:00:00.000Z') {
-             await db.table(table).clear();
+          if (isFirstSync) {
+            // On initial pull, WIPE the local table to avoid ID collisions
+            await db.table(table).clear();
+            await db.table(table).bulkAdd(toPut);
+          } else {
+            await db.table(table).bulkPut(toPut);
           }
-          await db.table(table).bulkPut(toPut);
         }
       }
     } catch (err) {
@@ -116,13 +112,12 @@ export async function syncAll() {
   const isFirstSync = !lastSync;
 
   if (isFirstSync) {
-    // Check if cloud is empty.
+    // Check if cloud has data
     const { count, error } = await supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('user_id', session.user.id);
     
     if (!error && count === 0) {
       // Cloud is empty. We are on the laptop. Push local data up!
       console.log("Cloud is empty. Pushing local data to Supabase...");
-      
       await db.transactions.toCollection().modify({ syncStatus: 'pending' });
       await db.settings.toCollection().modify({ syncStatus: 'pending' });
       await db.loans.toCollection().modify({ syncStatus: 'pending' });
@@ -132,14 +127,14 @@ export async function syncAll() {
       setLastSync(new Date().toISOString());
       return;
     } else {
-      // Cloud has data. Pull it down.
+      // Cloud has data. Wipe local and pull it down.
       console.log("Cloud has data. Pulling to local...");
-      await pullChanges();
+      await pullChanges(true);
       return;
     }
   }
 
   // Normal sync
   await pushChanges();
-  await pullChanges();
+  await pullChanges(false);
 }
