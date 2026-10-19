@@ -1,6 +1,6 @@
 import Dexie from 'dexie';
 import { SEED_DATA } from './seedData';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
 
 export const db = new Dexie('FinanceERP');
 
@@ -95,9 +95,28 @@ const DEFAULT_BUCKET_MAP = [
   { category: 'Income', subcategory: 'Yearly Bonus', bucket: 'Income' }
 ];
 
-export const initSettings = async () => {
-  const count = await db.settings.count();
-  if (count === 0) {
+// A fixed "namespace" so the same input always produces the same UUID.
+// This is what lets two devices seed the SAME rows with the SAME ids,
+// so the cloud sees them as one row instead of two.
+const SEED_NAMESPACE = '6f1c2b4e-8a3d-4c5e-9b7a-1d2e3f4a5b6c';
+
+export const stableUuid = (label) => uuidv5(label, SEED_NAMESPACE);
+
+let initPromise = null;
+
+export const initSettings = () => {
+  // If this is called twice at the same moment, both callers share one run.
+  if (!initPromise) {
+    initPromise = runInit().finally(() => { initPromise = null; });
+  }
+  return initPromise;
+};
+
+async function runInit() {
+  const nowISO = new Date().toISOString();
+
+  const settingsCount = await db.settings.count();
+  if (settingsCount === 0) {
     const defaults = [
       { key: 'essential_pct', value: 40 }, { key: 'discretionary_pct', value: 10 },
       { key: 'financial_pct', value: 15 }, { key: 'savings_pct', value: 35 },
@@ -105,22 +124,40 @@ export const initSettings = async () => {
       { key: 'current_usd_rate', value: 15.42 }, { key: 'debt_receivable', value: 0 },
       { key: 'bank_balance_override', value: '' }, { key: 'prev_year_balances', value: {} }
     ];
-    await db.settings.bulkPut(defaults.map(d => ({ 
-      ...d, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+    await db.settings.bulkPut(defaults.map(d => ({
+      ...d,
+      uuid: stableUuid('setting|' + d.key),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
     })));
   }
 
   const mapCount = await db.bucket_map.count();
   if (mapCount === 0) {
-    await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP.map(b => ({ 
-      ...b, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+    await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP.map(b => ({
+      ...b,
+      uuid: stableUuid('bucket|' + b.category + '|' + b.subcategory),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
     })));
   }
 
-  const txCount = await db.transactions.count();
-  if (txCount === 0 && SEED_DATA.length > 0) {
-    await db.transactions.bulkAdd(SEED_DATA.map(t => ({ 
-      ...t, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+  // Seed the historical rows only if this device has none at all.
+  // (Old code checked "is the transactions table empty?", which is wrong now
+  // that live transactions can arrive from the cloud before seeding runs.)
+  const historicalCount = await db.transactions
+    .filter(t => t.is_historical === true)
+    .count();
+
+  if (historicalCount === 0 && SEED_DATA.length > 0) {
+    await db.transactions.bulkAdd(SEED_DATA.map((t, index) => ({
+      ...t,
+      uuid: stableUuid('seed-tx|' + index),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
     })));
   }
-};
+}

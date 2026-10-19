@@ -1,9 +1,21 @@
 import { supabase } from './supabaseClient';
-import { db } from '../db/database';
+import { db, initSettings, stableUuid } from '../db/database';
+import { v4 as uuidv4 } from 'uuid';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
+const EPOCH_KEY = 'finance_erp_sync_epoch';
+// Bump this string whenever you want every device to do a full clean re-download.
+const SYNC_EPOCH = 'v7-dedupe-fix';
+
 const PAGE_SIZE = 1000;
 const PUSH_CHUNK = 500;
+// Phones and laptops have slightly different clocks. We look back a few
+// minutes on every pull so a row stamped by a "slow" clock is never missed.
+// Re-reading a row is harmless now (it just overwrites itself).
+const PULL_OVERLAP_MS = 5 * 60 * 1000;
+
+const TABLES = ['transactions', 'settings', 'loans', 'bucket_map'];
+const UUID_TABLES = ['transactions', 'loans', 'bucket_map'];
 
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
@@ -17,7 +29,9 @@ async function fetchAllRows(table, userId, sinceISO) {
       .from(table)
       .select('*')
       .eq('user_id', userId)
+      // order by id as a tie-breaker so paging is stable
       .order('updated_at', { ascending: true })
+      .order('id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
 
     if (sinceISO) {
@@ -37,23 +51,75 @@ async function fetchAllRows(table, userId, sinceISO) {
   return allRows;
 }
 
+/**
+ * Local self-repair. Runs before every sync.
+ *  1. Rows that somehow have no uuid get one (e.g. imported rows).
+ *  2. If two local rows share the same uuid, keep the newest, delete the rest.
+ * This quietly cleans up duplicates created by the old buggy pull.
+ */
+async function cleanupLocal() {
+  for (const table of UUID_TABLES) {
+    const rows = await db.table(table).toArray();
+    const seen = new Map();
+    const toDelete = [];
+    const needUuid = [];
+
+    for (const r of rows) {
+      if (!r.uuid) {
+        needUuid.push(r.id);
+        continue;
+      }
+      const prev = seen.get(r.uuid);
+      if (!prev) {
+        seen.set(r.uuid, r);
+        continue;
+      }
+      const prevTime = new Date(prev.updated_at || 0).getTime();
+      const thisTime = new Date(r.updated_at || 0).getTime();
+      // Keep whichever is newer. On a tie, keep the one we saw first.
+      if (thisTime > prevTime) {
+        toDelete.push(prev.id);
+        seen.set(r.uuid, r);
+      } else {
+        toDelete.push(r.id);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      console.warn(`[sync] Removing ${toDelete.length} duplicate local rows from ${table}`);
+      await db.table(table).bulkDelete(toDelete);
+    }
+
+    if (needUuid.length > 0) {
+      const nowISO = new Date().toISOString();
+      await db.table(table).where('id').anyOf(needUuid).modify(row => {
+        row.uuid = uuidv4();
+        row.syncStatus = 'pending';
+        row.updated_at = nowISO;
+        if (row.deleted === undefined) row.deleted = false;
+      });
+    }
+  }
+}
+
 export async function pushChanges() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return false; // Return false to signal failure
+  if (!session) return false;
 
-  const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
   const now = new Date().toISOString();
   let allSuccessful = true;
 
-  for (const table of tables) {
+  for (const table of TABLES) {
     const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
     if (pending.length === 0) continue;
 
     const toPush = pending.map(row => {
       // eslint-disable-next-line no-unused-vars
       const { id, syncStatus, uuid, ...rest } = row;
+      // Settings saved by older code may have no uuid; derive a stable one from the key.
+      const cloudId = uuid || (table === 'settings' ? stableUuid('setting|' + row.key) : uuidv4());
       return {
-        id: uuid, 
+        id: cloudId,
         ...rest,
         user_id: session.user.id,
         updated_at: now,
@@ -75,8 +141,8 @@ export async function pushChanges() {
         } else {
           const { error } = await supabase.from(table).upsert(chunk);
           if (error) throw error;
-          const uuids = chunkPending.map(p => p.uuid);
-          await db.table(table).where('uuid').anyOf(uuids).modify({ syncStatus: 'synced' });
+          const ids = chunkPending.map(p => p.id);
+          await db.table(table).where('id').anyOf(ids).modify({ syncStatus: 'synced' });
         }
       } catch (err) {
         console.error(`Error pushing ${table} chunk starting at ${i}:`, err.message);
@@ -84,7 +150,7 @@ export async function pushChanges() {
       }
     }
   }
-  
+
   return allSuccessful;
 }
 
@@ -92,102 +158,138 @@ export async function pullChanges(isFirstSync = false) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
 
-  const lastSync = getLastSync() || '1970-01-01T00:00:00.000Z';
-  const now = new Date().toISOString();
-  const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
+  const lastSync = getLastSync();
+  const pullStartedAt = new Date().toISOString();
 
-  const fetched = {};
-  for (const table of tables) {
-    try {
-      fetched[table] = await fetchAllRows(
-        table,
-        session.user.id,
-        isFirstSync ? null : lastSync
-      );
-    } catch (err) {
-      console.error(`Error fetching ${table}:`, err.message);
-      if (isFirstSync) throw err;
-      fetched[table] = [];
-    }
+  let sinceISO = null;
+  if (!isFirstSync && lastSync) {
+    sinceISO = new Date(new Date(lastSync).getTime() - PULL_OVERLAP_MS).toISOString();
   }
 
-  for (const table of tables) {
+  // Step 1: download everything first. If any download fails we stop BEFORE
+  // touching the local database, so a network hiccup can never leave you half-wiped.
+  const fetched = {};
+  for (const table of TABLES) {
+    fetched[table] = await fetchAllRows(table, session.user.id, sinceISO);
+  }
+
+  // Step 2: write into the local database, one table at a time, all-or-nothing.
+  for (const table of TABLES) {
     const rows = fetched[table];
-    
-    if (isFirstSync) {
-      await db.table(table).clear();
-    }
 
-    if (!rows || rows.length === 0) continue;
+    await db.transaction('rw', db.table(table), async () => {
+      if (isFirstSync) {
+        await db.table(table).clear();
+      }
+      if (!rows || rows.length === 0) return;
 
-    // Protect pending local edits from being overwritten by older cloud data
-    const existingRows = await db.table(table).toArray();
-    const existingMap = new Map(existingRows.map(r => [r.uuid, r]));
-
-    const toPut = rows.map(row => {
-      // eslint-disable-next-line no-unused-vars
-      const { user_id, id, ...rest } = row;
-      
-      const cloudUpdated = new Date(row.updated_at).getTime();
-      const localRow = existingMap.get(id);
-      
-      // If local is pending and has a newer timestamp, DON'T overwrite it
-      if (localRow && localRow.syncStatus === 'pending') {
-        const localUpdated = new Date(localRow.updated_at).getTime();
-        if (localUpdated > cloudUpdated) {
-          return null; 
-        }
+      // Look up what we already have locally, so we can UPDATE instead of INSERT.
+      // (This lookup is the fix. The old code skipped it, so every pull inserted
+      // a brand-new copy of rows that already existed.)
+      const existing = await db.table(table).toArray();
+      const localByKey = new Map();
+      for (const r of existing) {
+        localByKey.set(table === 'settings' ? r.key : r.uuid, r);
       }
 
-      return {
-        ...rest,
-        uuid: id, 
-        syncStatus: 'synced',
-      };
-    }).filter(Boolean); // Remove nulls
+      const toPut = [];
+      for (const row of rows) {
+        // eslint-disable-next-line no-unused-vars
+        const { user_id, id: cloudId, ...rest } = row;
+        const local = localByKey.get(table === 'settings' ? row.key : cloudId);
 
-    if (table === 'settings') {
-      await db.settings.bulkPut(toPut);
-    } else {
+        // Don't overwrite an unsynced local edit that is newer than the cloud copy.
+        if (local && local.syncStatus === 'pending') {
+          const localTime = new Date(local.updated_at || 0).getTime();
+          const cloudTime = new Date(row.updated_at || 0).getTime();
+          if (localTime > cloudTime) continue;
+        }
+
+        const out = { ...rest, uuid: cloudId, syncStatus: 'synced' };
+        // Reusing the local row's id is what makes put() replace it.
+        if (local && table !== 'settings') out.id = local.id;
+        toPut.push(out);
+      }
+
       if (toPut.length > 0) {
         await db.table(table).bulkPut(toPut);
       }
-    }
+    });
   }
 
-  setLastSync(now);
+  setLastSync(pullStartedAt);
 }
 
-export async function syncAll() {
+async function runSync() {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return;
+
+  // One-time reset after this fix is deployed: forget the old sync marker
+  // so this device does one clean full download.
+  if (localStorage.getItem(EPOCH_KEY) !== SYNC_EPOCH) {
+    localStorage.removeItem(LAST_SYNC_KEY);
+  }
+
+  await cleanupLocal();
 
   const lastSync = getLastSync();
 
   if (!lastSync) {
+    // First sync on this device (or a forced clean re-download).
     const { count, error } = await supabase
       .from('transactions')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', session.user.id);
 
-    if (!error && count === 0) {
-      await db.transactions.toCollection().modify({ syncStatus: 'pending' });
-      await db.settings.toCollection().modify({ syncStatus: 'pending' });
-      await db.loans.toCollection().modify({ syncStatus: 'pending' });
-      await db.bucket_map.toCollection().modify({ syncStatus: 'pending' });
-      await pushChanges();
+    if (error) throw error;
+
+    if (count === 0) {
+      // Cloud is empty: this device's data becomes the cloud's data.
+      await initSettings();
+      for (const t of TABLES) {
+        await db.table(t).toCollection().modify({ syncStatus: 'pending' });
+      }
+      const ok = await pushChanges();
+      if (!ok) throw new Error('Could not upload your data to the cloud.');
       setLastSync(new Date().toISOString());
     } else {
+      // Cloud has data: wipe local and take the cloud's copy.
       await pullChanges(true);
+      // Make sure historical seed rows exist (same ids on every device),
+      // then upload anything new.
+      await initSettings();
+      await pushChanges();
     }
+
+    localStorage.setItem(EPOCH_KEY, SYNC_EPOCH);
     return;
   }
 
-  // PUSH FIRST. If push fails, abort pull to prevent duplicates.
-  const pushSuccess = await pushChanges();
-  if (pushSuccess) {
+  // Normal sync: push first. If the push fails, do NOT pull.
+  const pushOk = await pushChanges();
+  if (pushOk) {
     await pullChanges(false);
   } else {
-    console.warn('Push failed. Aborting pull to prevent data loss/duplication.');
+    console.warn('Push failed. Skipping pull so local edits are not overwritten.');
   }
+}
+
+let runningSync = null;
+
+/**
+ * Only ONE sync may run at a time. If sync is requested while another is
+ * running (the app asks twice on startup, and again when you switch tabs),
+ * the second request just waits for the first one.
+ * navigator.locks extends this protection across browser tabs.
+ */
+export function syncAll() {
+  if (runningSync) return runningSync;
+
+  const task = () => runSync();
+  const wrapped = (navigator.locks && navigator.locks.request)
+    ? navigator.locks.request('finance-erp-sync', task)
+    : task();
+
+  runningSync = Promise.resolve(wrapped).finally(() => { runningSync = null; });
+  return runningSync;
 }
