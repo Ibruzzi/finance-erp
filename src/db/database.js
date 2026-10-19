@@ -1,10 +1,9 @@
 import Dexie from 'dexie';
 import { SEED_DATA } from './seedData';
-import { v4 as uuidv4 } from 'uuid'; // We need this package
+import { v4 as uuidv4 } from 'uuid';
 
 export const db = new Dexie('FinanceERP');
 
-// Note: We are bumping to version 202 to add the 'uuid' index
 db.version(202).stores({
   transactions: '++id, uuid, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
   settings: 'key, uuid, syncStatus, updated_at, deleted',
@@ -14,18 +13,16 @@ db.version(202).stores({
   exchange_rates: '++id, date_set, rate',
   bucket_map: '++id, uuid, category, subcategory, bucket, syncStatus, updated_at, deleted'
 }).upgrade(async tx => {
-  // Add UUIDs to all existing local rows
   const addUuids = async (tableName) => {
     await tx.table(tableName).toCollection().modify(item => {
       if (!item.uuid) item.uuid = uuidv4();
-      item.syncStatus = 'pending'; // Force a re-sync with the new UUIDs
+      item.syncStatus = 'pending';
     });
   };
   await addUuids('transactions');
   await addUuids('loans');
   await addUuids('bucket_map');
   
-  // For settings, we generate UUIDs too
   await tx.table('settings').toCollection().modify(item => {
     if (!item.uuid) item.uuid = uuidv4();
     item.syncStatus = 'pending';
@@ -33,7 +30,69 @@ db.version(202).stores({
 });
 
 const DEFAULT_BUCKET_MAP = [
-  // ... KEEP YOUR EXISTING DEFAULT_BUCKET_MAP HERE ...
+  // Personal
+  { category: 'Personal', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Medical', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Tickets', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Transportation', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Grocery', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Samu', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Book', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Wardrobe', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Clothing', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Cosmetics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Donation', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Electronics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Games', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Online Shopping', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Other', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'PC / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Phone / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Restaurant', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Room Rent', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Snacks', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Software', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Staff Shop', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Subscription', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Debt', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Pension', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Zakat', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Loan Repayment', bucket: 'Financial/Obligatory' },
+  // Family
+  { category: 'Family', subcategory: 'Mamma', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bappa', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Dhattha', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Aisu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ahammadhu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ali', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bro', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Faatthu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Combined', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Rent', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Tickets', bucket: 'Essential' },
+  // Boalhadhadige
+  { category: 'Boalhadhadige', subcategory: 'General', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Water', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Electricity', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Food', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Furniture', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Wiring', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Doors', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Tiles', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cements/Building', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Appliances', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Maintenance', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Phone/Internet', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Waste mngmnt.', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cleaning Goods', bucket: 'Discretionary' },
+  // Income
+  { category: 'Income', subcategory: 'Salary/Wages', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Service charge', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Misc.', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Ramadan Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Yearly Bonus', bucket: 'Income' }
 ];
 
 export const initSettings = async () => {

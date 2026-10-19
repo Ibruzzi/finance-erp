@@ -12,11 +12,11 @@ export const useStore = create((set, get) => ({
 
   loadData: async () => {
     set({ isLoading: true });
-    // Filter out deleted rows so they never leak into aggregates or UI.
-    const transactions = await db.transactions.filter(t => !t.deleted).toArray();
-    const settingsArray = await db.settings.filter(s => !s.deleted).toArray();
-    const loans = await db.loans.filter(l => !l.deleted).toArray();
-    const bucketMap = await db.bucket_map.filter(b => !b.deleted).toArray();
+    // Filter out deleted rows, but allow rows where 'deleted' is undefined (legacy data)
+    const transactions = await db.transactions.filter(t => t.deleted !== true).toArray();
+    const settingsArray = await db.settings.filter(s => s.deleted !== true).toArray();
+    const loans = await db.loans.filter(l => l.deleted !== true).toArray();
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
     const zakatLog = await db.zakat_log.toArray();
 
     const settings = settingsArray.reduce((acc, item) => {
@@ -29,7 +29,6 @@ export const useStore = create((set, get) => ({
 
   updateSetting: async (key, value) => {
     const { settings } = get();
-    // Skip no-op writes so we don't spam sync with unchanged settings.
     if (JSON.stringify(settings[key]) === JSON.stringify(value)) return;
 
     await db.settings.put({
@@ -92,13 +91,13 @@ export const useStore = create((set, get) => ({
   getSubcategoriesFor: (category) => {
     const { bucketMap } = get();
     return bucketMap
-      .filter(r => r.category === category && !r.deleted)
+      .filter(r => r.category === category && r.deleted !== true)
       .map(r => r.subcategory);
   },
 
   getCategories: () => {
     const { bucketMap } = get();
-    return [...new Set(bucketMap.filter(r => !r.deleted).map(r => r.category))];
+    return [...new Set(bucketMap.filter(r => r.deleted !== true).map(r => r.category))];
   },
 
   // ============ LOANS ============
@@ -140,7 +139,6 @@ export const useStore = create((set, get) => ({
       updated_at: new Date().toISOString(),
     });
 
-    // Unlink any transactions that pointed at this loan (by uuid).
     const linked = get().transactions.filter(t => t.loan_uuid === targetUuid);
     for (const t of linked) {
       await db.transactions.update(t.id, {
@@ -158,7 +156,6 @@ export const useStore = create((set, get) => ({
     }));
   },
 
-  // Takes loan_uuid (preferred). Falls back to local id for backwards compat.
   getLoanPaid: (loanIdentifier) => {
     const { transactions, loans } = get();
     const loan = loans.find(l => l.uuid === loanIdentifier || l.id === loanIdentifier);
@@ -168,7 +165,7 @@ export const useStore = create((set, get) => ({
       .filter(t =>
         t.loan_uuid === loan.uuid &&
         t.type === 'Expense' &&
-        !t.deleted
+        t.deleted !== true
       )
       .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
   },
@@ -177,7 +174,7 @@ export const useStore = create((set, get) => ({
     const { loans } = get();
     let total = 0;
     for (const loan of loans) {
-      if (loan.deleted) continue;
+      if (loan.deleted === true) continue;
       const paid = get().getLoanPaid(loan.uuid);
       total += Math.max(0, (loan.total_amount || 0) - paid);
     }
@@ -263,7 +260,7 @@ export const useStore = create((set, get) => ({
   getBucketBalances: (monthString) => {
     const { transactions, settings } = get();
     const monthTransactions = transactions.filter(
-      t => t.date.startsWith(monthString) && !t.is_historical && !t.deleted
+      t => t.date.startsWith(monthString) && !t.is_historical && t.deleted !== true
     );
 
     const totalIncome = monthTransactions
@@ -304,7 +301,7 @@ export const useStore = create((set, get) => ({
       t =>
         t.date.startsWith(monthString) &&
         t.type === 'Expense' &&
-        !t.deleted &&
+        t.deleted !== true &&
         (includeHistorical || !t.is_historical) &&
         Number.isFinite(t.amount_mvr)
     );
@@ -346,7 +343,7 @@ export const useStore = create((set, get) => ({
       .filter(
         t =>
           t.date.startsWith(monthString) &&
-          !t.deleted &&
+          t.deleted !== true &&
           (includeHistorical || !t.is_historical)
       )
       .sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -364,7 +361,7 @@ export const useStore = create((set, get) => ({
           t.subcategory === 'Zakat' &&
           t.date.startsWith(monthString) &&
           !t.is_historical &&
-          !t.deleted
+          t.deleted !== true
       )
       .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
@@ -377,10 +374,10 @@ export const useStore = create((set, get) => ({
       bankBalance = parseFloat(settings.bank_balance_override) || 0;
     } else {
       const totalIncome = transactions
-        .filter(t => t.type === 'Income' && !t.is_historical && !t.deleted)
+        .filter(t => t.type === 'Income' && !t.is_historical && t.deleted !== true)
         .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       const totalExpenses = transactions
-        .filter(t => t.type === 'Expense' && !t.is_historical && !t.deleted)
+        .filter(t => t.type === 'Expense' && !t.is_historical && t.deleted !== true)
         .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       bankBalance = totalIncome - totalExpenses;
     }
@@ -440,7 +437,7 @@ export const useStore = create((set, get) => ({
 
     return transactions
       .filter(t => {
-        if (t.deleted) return false;
+        if (t.deleted === true) return false;
         if (!includeHistorical && t.is_historical) return false;
         if (type !== 'All' && t.type !== type) return false;
         if (category && t.category !== category) return false;
@@ -496,7 +493,7 @@ export const useStore = create((set, get) => ({
     const { transactions } = get();
 
     const txFiltered = transactions.filter(
-      t => t.type === type && !t.deleted && Number.isFinite(t.amount_mvr)
+      t => t.type === type && t.deleted !== true && Number.isFinite(t.amount_mvr)
     );
 
     const yearSet = new Set();
@@ -547,7 +544,7 @@ export const useStore = create((set, get) => ({
       t =>
         t.type === type &&
         t.category === targetCategory &&
-        !t.deleted &&
+        t.deleted !== true &&
         Number.isFinite(t.amount_mvr)
     );
 
