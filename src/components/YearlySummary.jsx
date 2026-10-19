@@ -31,11 +31,12 @@ function SummaryTable({ title, tone, data, type }) {
           <table className="min-w-full text-sm">
             <thead className={headerBg}>
               <tr>
-                <th className="sticky left-0 bg-inherit text-left px-3 py-2 font-semibold text-gray-700 z-10 min-w-[140px]">
+                {/* FIXED: Added explicit solid background and fixed width for the sticky column */}
+                <th className="sticky left-0 bg-inherit text-left px-3 py-2 font-semibold text-gray-700 z-20 min-w-[140px] max-w-[140px] truncate shadow-[1px_0_0_0_#e5e7eb]">
                   Category
                 </th>
                 {years.map(y => (
-                  <th key={y} className="px-3 py-2 font-semibold text-gray-700 text-right whitespace-nowrap">
+                  <th key={y} className="px-3 py-2 font-semibold text-gray-700 text-right whitespace-nowrap min-w-[80px]">
                     {y}
                   </th>
                 ))}
@@ -59,7 +60,8 @@ function SummaryTable({ title, tone, data, type }) {
                       onClick={() => toggleExpand(r.category)}
                       className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
                     >
-                      <td className="sticky left-0 bg-white px-3 py-2 font-semibold text-gray-700 z-10 truncate max-w-[160px]">
+                      {/* FIXED: Solid background and shadow for sticky column */}
+                      <td className="sticky left-0 bg-white px-3 py-2 font-semibold text-gray-700 z-10 truncate max-w-[140px] shadow-[1px_0_0_0_#f3f4f6]">
                         <div className="flex items-center gap-1">
                           {isOpen 
                             ? <ChevronDown size={14} className="text-gray-400 flex-shrink-0" /> 
@@ -84,7 +86,8 @@ function SummaryTable({ title, tone, data, type }) {
                     {/* --- Subcategory Rows --- */}
                     {isOpen && subcategories.map(sub => (
                       <tr key={`${r.category}-${sub.subcategory}`} className="bg-gray-50/40 border-t border-gray-50">
-                        <td className="sticky left-0 bg-gray-50/90 px-3 py-1.5 text-xs text-gray-500 z-10 truncate max-w-[160px] pl-8">
+                        {/* FIXED: Solid background for sticky column */}
+                        <td className="sticky left-0 bg-[#fafafa] px-3 py-1.5 text-xs text-gray-500 z-10 truncate max-w-[140px] pl-8 shadow-[1px_0_0_0_#f3f4f6]">
                           {sub.subcategory || '(No subcategory)'}
                         </td>
                         {years.map(y => (
@@ -106,7 +109,8 @@ function SummaryTable({ title, tone, data, type }) {
 
               {/* --- Grand Total Row --- */}
               <tr className={`border-t-2 ${borderCol} bg-gray-50 font-bold`}>
-                <td className="sticky left-0 bg-gray-50 px-3 py-2 text-gray-900 z-10">
+                {/* FIXED: Solid background for sticky column */}
+                <td className="sticky left-0 bg-gray-50 px-3 py-2 text-gray-900 z-10 truncate max-w-[140px] shadow-[1px_0_0_0_#e5e7eb]">
                   All {title}
                 </td>
                 {years.map(y => (
