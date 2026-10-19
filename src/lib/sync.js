@@ -10,10 +10,6 @@ export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, is
 
 /**
  * Fetch every row from a Supabase table for the current user, paginated.
- * - Orders by updated_at (required for stable pagination — without it, rows
- *   can be silently skipped or duplicated between pages).
- * - Loops until a page returns fewer than PAGE_SIZE rows.
- * - If sinceISO is provided, only fetches rows updated after that timestamp.
  */
 async function fetchAllRows(table, userId, sinceISO) {
   const allRows = [];
@@ -38,7 +34,6 @@ async function fetchAllRows(table, userId, sinceISO) {
     allRows.push(...data);
 
     if (data.length < PAGE_SIZE) break;
-
     from += PAGE_SIZE;
   }
 
@@ -60,16 +55,13 @@ export async function pushChanges() {
       // eslint-disable-next-line no-unused-vars
       const { id, syncStatus, uuid, ...rest } = row;
       return {
-        id: uuid,
+        id: uuid, 
         ...rest,
         user_id: session.user.id,
         updated_at: now,
       };
     });
 
-    // Chunked upsert so we never send a request body that exceeds
-    // PostgREST's limits. Each chunk is marked synced independently, so a
-    // mid-flight failure doesn't force the whole batch to re-push.
     for (let i = 0; i < toPush.length; i += PUSH_CHUNK) {
       const chunk = toPush.slice(i, i + PUSH_CHUNK);
       const chunkPending = pending.slice(i, i + PUSH_CHUNK);
@@ -90,7 +82,6 @@ export async function pushChanges() {
         }
       } catch (err) {
         console.error(`Error pushing ${table} chunk starting at ${i}:`, err.message);
-        // Don't abort — other chunks can still succeed.
       }
     }
   }
@@ -105,8 +96,6 @@ export async function pullChanges(isFirstSync = false) {
   const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
 
   // PHASE 1: Fetch everything into memory first.
-  // This ensures that if the network fails mid-way, we haven't already
-  // wiped local data (critical for first sync on a fresh device).
   const fetched = {};
   for (const table of tables) {
     try {
@@ -117,7 +106,6 @@ export async function pullChanges(isFirstSync = false) {
       );
     } catch (err) {
       console.error(`Error fetching ${table}:`, err.message);
-      // If ANY table fails on first sync, abort entirely — do not wipe local.
       if (isFirstSync) throw err;
       fetched[table] = [];
     }
@@ -126,6 +114,13 @@ export async function pullChanges(isFirstSync = false) {
   // PHASE 2: Apply to Dexie.
   for (const table of tables) {
     const rows = fetched[table];
+    
+    // If it's a first sync, we ALWAYS wipe the local table first.
+    // If the cloud is empty, it will just be empty locally now.
+    if (isFirstSync) {
+      await db.table(table).clear();
+    }
+
     if (!rows || rows.length === 0) continue;
 
     const toPut = rows.map(row => {
@@ -133,7 +128,7 @@ export async function pullChanges(isFirstSync = false) {
       const { user_id, id, ...rest } = row;
       return {
         ...rest,
-        uuid: id,
+        uuid: id, 
         syncStatus: 'synced',
       };
     });
@@ -141,7 +136,6 @@ export async function pullChanges(isFirstSync = false) {
     if (table === 'settings') {
       await db.settings.bulkPut(toPut);
     } else {
-      if (isFirstSync) await db.table(table).clear();
       await db.table(table).bulkPut(toPut);
     }
   }
@@ -156,27 +150,28 @@ export async function syncAll() {
   const lastSync = getLastSync();
 
   if (!lastSync) {
+    // THIS IS A FRESH INSTALL (or cleared browser)
+    // If cloud has data, pull it down (pullChanges will wipe local first).
+    // If cloud is empty, push local seed up.
     const { count, error } = await supabase
       .from('transactions')
       .select('*', { count: 'exact', head: true })
       .eq('user_id', session.user.id);
 
     if (!error && count === 0) {
-      // Cloud is empty → push everything local up.
       await db.transactions.toCollection().modify({ syncStatus: 'pending' });
       await db.settings.toCollection().modify({ syncStatus: 'pending' });
       await db.loans.toCollection().modify({ syncStatus: 'pending' });
       await db.bucket_map.toCollection().modify({ syncStatus: 'pending' });
       await pushChanges();
       setLastSync(new Date().toISOString());
-      return;
+    } else {
+      await pullChanges(true); // Pass isFirstSync = true
     }
-
-    // Cloud has data → pull down and wipe local.
-    await pullChanges(true);
     return;
   }
 
+  // Normal sync
   await pushChanges();
   await pullChanges(false);
 }
