@@ -13,9 +13,11 @@ export function TotalDebtCard({ totalDebt, loans, onManage }) {
             <span className="text-xs font-semibold uppercase">Total Debt Remaining</span>
           </div>
           <div className="text-xl font-bold text-gray-800 truncate">RF {formatMoney(totalDebt)}</div>
-          <div className="text-xs text-gray-400">across {loans.length} loan{loans.length !== 1 ? 's' : ''}</div>
+          <div className="text-xs text-gray-400">
+            across {loans.length} loan{loans.length !== 1 ? 's' : ''}
+          </div>
         </div>
-        <button 
+        <button
           onClick={onManage}
           className="text-xs bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg font-semibold text-gray-700 flex-shrink-0"
         >

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { db } from '../db/database';
-import { v4 as uuidv4 } from 'uuid'; // <-- ADDED IMPORT
+import { v4 as uuidv4 } from 'uuid';
 
 export const useStore = create((set, get) => ({
   transactions: [],
@@ -12,10 +12,11 @@ export const useStore = create((set, get) => ({
 
   loadData: async () => {
     set({ isLoading: true });
-    const transactions = await db.transactions.toArray();
-    const settingsArray = await db.settings.toArray();
-    const loans = await db.loans.toArray();
-    const bucketMap = await db.bucket_map.toArray();
+    // Filter out deleted rows so they never leak into aggregates or UI.
+    const transactions = await db.transactions.filter(t => !t.deleted).toArray();
+    const settingsArray = await db.settings.filter(s => !s.deleted).toArray();
+    const loans = await db.loans.filter(l => !l.deleted).toArray();
+    const bucketMap = await db.bucket_map.filter(b => !b.deleted).toArray();
     const zakatLog = await db.zakat_log.toArray();
 
     const settings = settingsArray.reduce((acc, item) => {
@@ -27,16 +28,19 @@ export const useStore = create((set, get) => ({
   },
 
   updateSetting: async (key, value) => {
-    // Settings use the key as the primary identifier, no uuid needed
-    await db.settings.put({ 
-      key, 
-      value, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString(), 
-      deleted: false 
+    const { settings } = get();
+    // Skip no-op writes so we don't spam sync with unchanged settings.
+    if (JSON.stringify(settings[key]) === JSON.stringify(value)) return;
+
+    await db.settings.put({
+      key,
+      value,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false,
     });
     set((state) => ({
-      settings: { ...state.settings, [key]: value }
+      settings: { ...state.settings, [key]: value },
     }));
   },
 
@@ -56,29 +60,31 @@ export const useStore = create((set, get) => ({
     );
 
     if (existing) {
-      await db.bucket_map.update(existing.id, { 
+      await db.bucket_map.update(existing.id, {
         bucket: newBucket,
         syncStatus: 'pending',
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
       set((state) => ({
         bucketMap: state.bucketMap.map(r =>
-          r.id === existing.id ? { ...r, bucket: newBucket, syncStatus: 'pending', updated_at: new Date().toISOString() } : r
-        )
+          r.id === existing.id
+            ? { ...r, bucket: newBucket, syncStatus: 'pending', updated_at: new Date().toISOString() }
+            : r
+        ),
       }));
     } else {
-      const newRow = { 
-        category, 
-        subcategory, 
+      const newRow = {
+        category,
+        subcategory,
         bucket: newBucket,
-        uuid: uuidv4(), // <-- ADDED UUID
+        uuid: uuidv4(),
         syncStatus: 'pending',
         updated_at: new Date().toISOString(),
-        deleted: false
+        deleted: false,
       };
       const id = await db.bucket_map.add(newRow);
       set((state) => ({
-        bucketMap: [...state.bucketMap, { ...newRow, id }]
+        bucketMap: [...state.bucketMap, { ...newRow, id }],
       }));
     }
   },
@@ -97,65 +103,74 @@ export const useStore = create((set, get) => ({
 
   // ============ LOANS ============
   addLoan: async (loanData) => {
+    const uuid = uuidv4();
     const newLoan = {
       ...loanData,
-      uuid: uuidv4(), // <-- ADDED UUID
+      uuid,
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
-      deleted: false
+      deleted: false,
     };
     const id = await db.loans.add(newLoan);
     set((state) => ({
-      loans: [...state.loans, { ...newLoan, id }]
+      loans: [...state.loans, { ...newLoan, id }],
     }));
+    return uuid;
   },
 
   updateLoan: async (id, updates) => {
     const updateData = {
       ...updates,
       syncStatus: 'pending',
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
     await db.loans.update(id, updateData);
     set((state) => ({
-      loans: state.loans.map(l => l.id === id ? { ...l, ...updateData } : l)
+      loans: state.loans.map(l => (l.id === id ? { ...l, ...updateData } : l)),
     }));
   },
 
   deleteLoan: async (id) => {
-    await db.loans.update(id, { 
-      deleted: true, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString() 
+    const target = get().loans.find(l => l.id === id);
+    const targetUuid = target?.uuid;
+
+    await db.loans.update(id, {
+      deleted: true,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
     });
-    
-    const linked = get().transactions.filter(t => t.loan_id === id);
+
+    // Unlink any transactions that pointed at this loan (by uuid).
+    const linked = get().transactions.filter(t => t.loan_uuid === targetUuid);
     for (const t of linked) {
-      await db.transactions.update(t.id, { 
-        loan_id: null,
+      await db.transactions.update(t.id, {
+        loan_uuid: null,
         syncStatus: 'pending',
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
     }
-    
+
     set((state) => ({
       loans: state.loans.filter(l => l.id !== id),
       transactions: state.transactions.map(t =>
-        t.loan_id === id ? { ...t, loan_id: null, syncStatus: 'pending' } : t
-      )
+        t.loan_uuid === targetUuid ? { ...t, loan_uuid: null, syncStatus: 'pending' } : t
+      ),
     }));
   },
 
-  getLoanPaid: (loanId) => {
-    const { transactions } = get();
+  // Takes loan_uuid (preferred). Falls back to local id for backwards compat.
+  getLoanPaid: (loanIdentifier) => {
+    const { transactions, loans } = get();
+    const loan = loans.find(l => l.uuid === loanIdentifier || l.id === loanIdentifier);
+    if (!loan) return 0;
+
     return transactions
       .filter(t =>
-        t.loan_id === loanId &&
+        t.loan_uuid === loan.uuid &&
         t.type === 'Expense' &&
-        !t.is_historical &&
         !t.deleted
       )
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
   },
 
   getTotalDebtPayable: () => {
@@ -163,7 +178,7 @@ export const useStore = create((set, get) => ({
     let total = 0;
     for (const loan of loans) {
       if (loan.deleted) continue;
-      const paid = get().getLoanPaid(loan.id);
+      const paid = get().getLoanPaid(loan.uuid);
       total += Math.max(0, (loan.total_amount || 0) - paid);
     }
     return total;
@@ -185,16 +200,16 @@ export const useStore = create((set, get) => ({
       exchange_rate_at_time: currentRate,
       is_historical: false,
       date: transactionData.date || new Date().toISOString(),
-      uuid: uuidv4(), // <-- ADDED UUID
+      uuid: uuidv4(),
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
-      deleted: false
+      deleted: false,
     };
 
     const id = await db.transactions.add(newTransaction);
 
     set((state) => ({
-      transactions: [...state.transactions, { ...newTransaction, id }]
+      transactions: [...state.transactions, { ...newTransaction, id }],
     }));
   },
 
@@ -203,73 +218,95 @@ export const useStore = create((set, get) => ({
     const existing = get().transactions.find(t => t.id === id);
     if (!existing) return;
 
-    const currentRate = updates.exchange_rate_at_time || existing.exchange_rate_at_time || settings.current_usd_rate || 15.42;
+    const currentRate =
+      updates.exchange_rate_at_time ||
+      existing.exchange_rate_at_time ||
+      settings.current_usd_rate ||
+      15.42;
 
-    let amount_mvr = updates.amount_original !== undefined ? updates.amount_original : existing.amount_original;
+    let amount_mvr =
+      updates.amount_original !== undefined
+        ? updates.amount_original
+        : existing.amount_original;
     if ((updates.currency || existing.currency) === 'USD') {
       amount_mvr = amount_mvr * currentRate;
     }
 
-    const updated = { 
-      ...existing, 
-      ...updates, 
-      amount_mvr, 
+    const updated = {
+      ...existing,
+      ...updates,
+      amount_mvr,
       exchange_rate_at_time: currentRate,
       syncStatus: 'pending',
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
 
     await db.transactions.put(updated);
 
     set((state) => ({
-      transactions: state.transactions.map(t => t.id === id ? updated : t)
+      transactions: state.transactions.map(t => (t.id === id ? updated : t)),
     }));
   },
 
   deleteTransaction: async (id) => {
-    await db.transactions.update(id, { 
-      deleted: true, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString() 
+    await db.transactions.update(id, {
+      deleted: true,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
     });
     set((state) => ({
-      transactions: state.transactions.filter(t => t.id !== id)
+      transactions: state.transactions.filter(t => t.id !== id),
     }));
   },
 
   // ============ CALCULATIONS ============
   getBucketBalances: (monthString) => {
     const { transactions, settings } = get();
-    const monthTransactions = transactions.filter(t => t.date.startsWith(monthString) && !t.is_historical && !t.deleted);
+    const monthTransactions = transactions.filter(
+      t => t.date.startsWith(monthString) && !t.is_historical && !t.deleted
+    );
 
     const totalIncome = monthTransactions
       .filter(t => t.type === 'Income')
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
-    const essentialAllocated = totalIncome * (settings.essential_pct / 100);
-    const discretionaryAllocated = totalIncome * (settings.discretionary_pct / 100);
-    const financialAllocated = totalIncome * (settings.financial_pct / 100);
-    const savingsAllocated = totalIncome * (settings.savings_pct / 100);
+    const ePct = Number(settings.essential_pct) || 40;
+    const dPct = Number(settings.discretionary_pct) || 10;
+    const fPct = Number(settings.financial_pct) || 15;
+    const sPct = Number(settings.savings_pct) || 35;
 
-    const essentialSpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Essential').reduce((sum, t) => sum + t.amount_mvr, 0);
-    const discretionarySpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Discretionary').reduce((sum, t) => sum + t.amount_mvr, 0);
-    const financialSpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory').reduce((sum, t) => sum + t.amount_mvr, 0);
+    const essentialAllocated = totalIncome * (ePct / 100);
+    const discretionaryAllocated = totalIncome * (dPct / 100);
+    const financialAllocated = totalIncome * (fPct / 100);
+    const savingsAllocated = totalIncome * (sPct / 100);
+
+    const essentialSpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Essential')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
+    const discretionarySpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Discretionary')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
+    const financialSpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
     return {
       Essential: { allocated: essentialAllocated, spent: essentialSpent, remaining: essentialAllocated - essentialSpent },
       Discretionary: { allocated: discretionaryAllocated, spent: discretionarySpent, remaining: discretionaryAllocated - discretionarySpent },
       Financial: { allocated: financialAllocated, spent: financialSpent, remaining: financialAllocated - financialSpent },
-      Savings: { allocated: savingsAllocated, spent: 0, remaining: savingsAllocated }
+      Savings: { allocated: savingsAllocated, spent: 0, remaining: savingsAllocated },
     };
   },
 
   getCategoryTotals: (monthString, includeHistorical = false) => {
     const { transactions } = get();
-    const monthExpenses = transactions.filter(t =>
-      t.date.startsWith(monthString) &&
-      t.type === 'Expense' &&
-      !t.deleted &&
-      (includeHistorical || !t.is_historical)
+    const monthExpenses = transactions.filter(
+      t =>
+        t.date.startsWith(monthString) &&
+        t.type === 'Expense' &&
+        !t.deleted &&
+        (includeHistorical || !t.is_historical) &&
+        Number.isFinite(t.amount_mvr)
     );
 
     const byCategory = {};
@@ -294,8 +331,7 @@ export const useStore = create((set, get) => ({
       .map(c => ({
         category: c.category,
         amount: c.amount,
-        subcategories: Object.values(c.subcategories)
-          .sort((a, b) => b.amount - a.amount),
+        subcategories: Object.values(c.subcategories).sort((a, b) => b.amount - a.amount),
       }))
       .sort((a, b) => b.amount - a.amount);
 
@@ -307,7 +343,12 @@ export const useStore = create((set, get) => ({
   getMonthTransactions: (monthString, includeHistorical = false) => {
     const { transactions } = get();
     return transactions
-      .filter(t => t.date.startsWith(monthString) && !t.deleted && (includeHistorical || !t.is_historical))
+      .filter(
+        t =>
+          t.date.startsWith(monthString) &&
+          !t.deleted &&
+          (includeHistorical || !t.is_historical)
+      )
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
@@ -316,26 +357,31 @@ export const useStore = create((set, get) => ({
     const { transactions, settings } = get();
 
     const zakatPaidThisMonth = transactions
-      .filter(t =>
-        t.type === 'Expense' &&
-        t.category === 'Personal' &&
-        t.subcategory === 'Zakat' &&
-        t.date.startsWith(monthString) &&
-        !t.is_historical &&
-        !t.deleted
+      .filter(
+        t =>
+          t.type === 'Expense' &&
+          t.category === 'Personal' &&
+          t.subcategory === 'Zakat' &&
+          t.date.startsWith(monthString) &&
+          !t.is_historical &&
+          !t.deleted
       )
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
     let bankBalance;
-    if (settings.bank_balance_override !== undefined && settings.bank_balance_override !== null && settings.bank_balance_override !== '') {
-      bankBalance = parseFloat(settings.bank_balance_override);
+    if (
+      settings.bank_balance_override !== undefined &&
+      settings.bank_balance_override !== null &&
+      settings.bank_balance_override !== ''
+    ) {
+      bankBalance = parseFloat(settings.bank_balance_override) || 0;
     } else {
       const totalIncome = transactions
         .filter(t => t.type === 'Income' && !t.is_historical && !t.deleted)
-        .reduce((sum, t) => sum + t.amount_mvr, 0);
+        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       const totalExpenses = transactions
         .filter(t => t.type === 'Expense' && !t.is_historical && !t.deleted)
-        .reduce((sum, t) => sum + t.amount_mvr, 0);
+        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       bankBalance = totalIncome - totalExpenses;
     }
 
@@ -348,7 +394,8 @@ export const useStore = create((set, get) => ({
     const prevYearBalances = settings.prev_year_balances || {};
     const lastYearBalance = parseFloat(prevYearBalances[monthKey]) || 0;
 
-    const eligible = bankBalanceBeforeZakat > lastYearBalance || bankBalanceBeforeZakat > nisab;
+    const eligible =
+      bankBalanceBeforeZakat > lastYearBalance || bankBalanceBeforeZakat > nisab;
 
     const zakatableAmount = bankBalanceBeforeZakat - debtPayable + debtReceivable;
     const baseZakat = eligible && zakatableAmount > 0 ? zakatableAmount * 0.025 : 0;
@@ -368,18 +415,13 @@ export const useStore = create((set, get) => ({
       zakatPaidThisMonth,
       zakatDue,
       eligible,
-      fullyPaid
+      fullyPaid,
     };
   },
 
   // ============ RANGE + YEARLY ============
   getTransactionsInRange: (fromISO, toISO, opts = {}) => {
-    const {
-      includeHistorical = true,
-      type = 'All',
-      category = null,
-    } = opts;
-
+    const { includeHistorical = true, type = 'All', category = null } = opts;
     const { transactions } = get();
 
     let from = null;
@@ -417,12 +459,15 @@ export const useStore = create((set, get) => ({
 
       rows.forEach(t => {
         if (t.type !== typeFilter) return;
+        if (!Number.isFinite(t.amount_mvr)) return;
 
         const cat = t.category || '(Uncategorized)';
         const sub = t.subcategory || '(No subcategory)';
 
         if (!map[cat]) map[cat] = { category: cat, total: 0, subcategories: {} };
-        if (!map[cat].subcategories[sub]) map[cat].subcategories[sub] = { subcategory: sub, total: 0, count: 0 };
+        if (!map[cat].subcategories[sub]) {
+          map[cat].subcategories[sub] = { subcategory: sub, total: 0, count: 0 };
+        }
 
         map[cat].total += t.amount_mvr;
         map[cat].subcategories[sub].total += t.amount_mvr;
@@ -450,7 +495,9 @@ export const useStore = create((set, get) => ({
   getYearlySummary: (type = 'Expense') => {
     const { transactions } = get();
 
-    const txFiltered = transactions.filter(t => t.type === type && !t.deleted);
+    const txFiltered = transactions.filter(
+      t => t.type === type && !t.deleted && Number.isFinite(t.amount_mvr)
+    );
 
     const yearSet = new Set();
     txFiltered.forEach(t => {
@@ -467,17 +514,21 @@ export const useStore = create((set, get) => ({
       const cat = t.category || '(Uncategorized)';
       if (!catMap[cat]) {
         catMap[cat] = { category: cat, byYear: {} };
-        years.forEach(yy => { catMap[cat].byYear[yy] = 0; });
+        years.forEach(yy => {
+          catMap[cat].byYear[yy] = 0;
+        });
       }
       catMap[cat].byYear[y] = (catMap[cat].byYear[y] || 0) + t.amount_mvr;
     });
 
-    const rows = Object.values(catMap).map(r => {
-      const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
-      const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
-      const avg = activeYears.length > 0 ? total / activeYears.length : 0;
-      return { ...r, total, avg };
-    }).sort((a, b) => b.total - a.total);
+    const rows = Object.values(catMap)
+      .map(r => {
+        const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
+        const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
+        const avg = activeYears.length > 0 ? total / activeYears.length : 0;
+        return { ...r, total, avg };
+      })
+      .sort((a, b) => b.total - a.total);
 
     const grandTotalByYear = {};
     years.forEach(y => {
@@ -491,8 +542,14 @@ export const useStore = create((set, get) => ({
 
   getSubcategoryYearlySummary: (targetCategory, years, type = 'Expense') => {
     const { transactions } = get();
-    
-    const catTx = transactions.filter(t => t.type === type && t.category === targetCategory && !t.deleted);
+
+    const catTx = transactions.filter(
+      t =>
+        t.type === type &&
+        t.category === targetCategory &&
+        !t.deleted &&
+        Number.isFinite(t.amount_mvr)
+    );
 
     const subMap = {};
     catTx.forEach(t => {
@@ -502,16 +559,20 @@ export const useStore = create((set, get) => ({
       const sub = t.subcategory || '(No subcategory)';
       if (!subMap[sub]) {
         subMap[sub] = { subcategory: sub, byYear: {} };
-        years.forEach(yy => { subMap[sub].byYear[yy] = 0; });
+        years.forEach(yy => {
+          subMap[sub].byYear[yy] = 0;
+        });
       }
       subMap[sub].byYear[y] = (subMap[sub].byYear[y] || 0) + t.amount_mvr;
     });
 
-    return Object.values(subMap).map(r => {
-      const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
-      const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
-      const avg = activeYears.length > 0 ? total / activeYears.length : 0;
-      return { ...r, total, avg };
-    }).sort((a, b) => b.total - a.total);
-  }
+    return Object.values(subMap)
+      .map(r => {
+        const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
+        const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
+        const avg = activeYears.length > 0 ? total / activeYears.length : 0;
+        return { ...r, total, avg };
+      })
+      .sort((a, b) => b.total - a.total);
+  },
 }));

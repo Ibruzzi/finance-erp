@@ -316,32 +316,6 @@ export const SEED_DATA = [
   {
     "date": "2018-01-15T00:00:00.000Z",
     "category": "Family",
-    "subcategory": "Ali",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
-    "subcategory": "Bro",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
     "subcategory": "Faatthu",
     "amount_original": 96.4,
     "currency": "MVR",
@@ -349,19 +323,6 @@ export const SEED_DATA = [
     "amount_mvr": 96.4,
     "type": "Expense",
     "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
-    "subcategory": "Tickets",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Essential",
     "is_historical": true,
     "notes": "2018 aggregates"
   },

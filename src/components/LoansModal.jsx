@@ -8,10 +8,11 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
   const [editingLoan, setEditingLoan] = useState(null);
 
   const handleDelete = async (loan) => {
-    const paid = getLoanPaid(loan.id);
-    const confirmMsg = paid > 0 
-      ? `This loan has RF ${formatMoney(paid)} in recorded payments. Deleting will unlink those transactions but keep them as expenses. Continue?`
-      : `Delete loan "${loan.name}"?`;
+    const paid = getLoanPaid(loan.uuid);
+    const confirmMsg =
+      paid > 0
+        ? `This loan has RF ${formatMoney(paid)} in recorded payments. Deleting will unlink those transactions but keep them as expenses. Continue?`
+        : `Delete loan "${loan.name}"?`;
     if (window.confirm(confirmMsg)) {
       await deleteLoan(loan.id);
     }
@@ -20,7 +21,6 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-white w-full max-w-2xl rounded-t-2xl sm:rounded-2xl p-4 sm:p-5 max-h-[90vh] overflow-y-auto overflow-x-hidden">
-        
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2">
             <CreditCard size={20} className="text-red-500" /> Loans
@@ -32,7 +32,7 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
 
         {!isAdding && !editingLoan && (
           <>
-            <button 
+            <button
               onClick={() => setIsAdding(true)}
               className="w-full mb-4 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition flex items-center justify-center gap-2"
             >
@@ -46,7 +46,7 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
             ) : (
               <div className="space-y-3">
                 {loans.map(loan => {
-                  const paid = getLoanPaid(loan.id);
+                  const paid = getLoanPaid(loan.uuid);
                   const remaining = Math.max(0, loan.total_amount - paid);
                   const pct = loan.total_amount > 0 ? (paid / loan.total_amount) * 100 : 0;
                   return (
@@ -61,19 +61,27 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
                           )}
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
-                          <button onClick={() => setEditingLoan(loan)} className="p-1.5 text-blue-500 hover:bg-blue-100 rounded">
+                          <button
+                            onClick={() => setEditingLoan(loan)}
+                            className="p-1.5 text-blue-500 hover:bg-blue-100 rounded"
+                          >
                             <Pencil size={14} />
                           </button>
-                          <button onClick={() => handleDelete(loan)} className="p-1.5 text-red-500 hover:bg-red-100 rounded">
+                          <button
+                            onClick={() => handleDelete(loan)}
+                            className="p-1.5 text-red-500 hover:bg-red-100 rounded"
+                          >
                             <Trash2 size={14} />
                           </button>
                         </div>
                       </div>
-                      
+
                       <div className="grid grid-cols-3 gap-2 text-xs mb-2">
                         <div>
                           <div className="text-gray-400">Total</div>
-                          <div className="font-semibold text-gray-700">RF {formatMoney(loan.total_amount)}</div>
+                          <div className="font-semibold text-gray-700">
+                            RF {formatMoney(loan.total_amount)}
+                          </div>
                         </div>
                         <div>
                           <div className="text-gray-400">Paid</div>
@@ -81,17 +89,21 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
                         </div>
                         <div>
                           <div className="text-gray-400">Remaining</div>
-                          <div className="font-semibold text-red-600">RF {formatMoney(remaining)}</div>
+                          <div className="font-semibold text-red-600">
+                            RF {formatMoney(remaining)}
+                          </div>
                         </div>
                       </div>
 
                       <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                        <div 
+                        <div
                           className="bg-green-500 h-full transition-all"
                           style={{ width: `${Math.min(100, pct)}%` }}
                         ></div>
                       </div>
-                      <div className="text-[10px] text-gray-400 mt-1 text-right">{pct.toFixed(1)}% paid</div>
+                      <div className="text-[10px] text-gray-400 mt-1 text-right">
+                        {pct.toFixed(1)}% paid
+                      </div>
                     </div>
                   );
                 })}
@@ -101,9 +113,12 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
         )}
 
         {(isAdding || editingLoan) && (
-          <LoanForm 
+          <LoanForm
             initialData={editingLoan}
-            onCancel={() => { setIsAdding(false); setEditingLoan(null); }}
+            onCancel={() => {
+              setIsAdding(false);
+              setEditingLoan(null);
+            }}
             onSave={async (data) => {
               if (editingLoan) {
                 await updateLoan(editingLoan.id, data);
@@ -115,7 +130,6 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
             }}
           />
         )}
-
       </div>
     </div>
   );

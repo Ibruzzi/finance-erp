@@ -1,4 +1,4 @@
-  // generate-seed.cjs
+// generate-seed.cjs
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
@@ -20,13 +20,12 @@ console.log(`Found ${files.length} .xlsx files.`);
 files.forEach(file => {
   console.log(`Processing ${file}...`);
   const workbook = XLSX.readFile(path.join(INPUT_DIR, file));
-  
+
   workbook.SheetNames.forEach(sheetName => {
     const sheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
 
     rows.forEach(row => {
-      // Normalize keys to lowercase to handle both 'Date' and 'date', 'amount_original' and 'Amount'
       const getVal = (key) => {
         if (row[key] !== undefined) return row[key];
         const lowerKey = key.toLowerCase();
@@ -37,17 +36,19 @@ files.forEach(file => {
       const dateVal = getVal('date');
       const category = getVal('category');
       const subcategory = getVal('subcategory');
-      // Check 'amount_original' first, then 'amount'
-      const amount = getVal('amount_original') !== null ? getVal('amount_original') : getVal('amount');
+      const amountRaw =
+        getVal('amount_original') !== null ? getVal('amount_original') : getVal('amount');
       const currency = getVal('currency') || 'MVR';
       const notes = getVal('notes') || '';
 
-      if (!dateVal || !category || amount === undefined || amount === null || amount === 0) return;
+      if (!dateVal || !category) return;
 
-      // Handle Excel Serial Numbers (e.g., 44931) vs Date Strings (e.g., '2023-01-05')
+      // Robust numeric check: catches null, undefined, '', 'abc', NaN.
+      const amount = Number(amountRaw);
+      if (!Number.isFinite(amount) || amount === 0) return;
+
       let parsedDate;
       if (typeof dateVal === 'number') {
-        // Excel epoch starts at 1899-12-30
         const excelEpoch = new Date(Date.UTC(1899, 11, 30));
         parsedDate = new Date(excelEpoch.getTime() + dateVal * 24 * 60 * 60 * 1000);
       } else {
@@ -56,25 +57,28 @@ files.forEach(file => {
 
       if (isNaN(parsedDate.getTime())) return;
 
-      // Convert to local ISO date string safely
       const isoDate = parsedDate.toISOString();
       const year = parsedDate.getFullYear();
-      
+
       yearCounts[year] = (yearCounts[year] || 0) + 1;
 
       const type = String(category).toLowerCase().includes('income') ? 'Income' : 'Expense';
-      
-      const rate = String(currency).toUpperCase() === 'USD' ? 15.42 : 1;
-      const amount_mvr = Number(amount) * rate;
 
-      // Default bucket mapping
+      const rate = String(currency).toUpperCase() === 'USD' ? 15.42 : 1;
+      const amount_mvr = amount * rate;
+
       let bucket = 'Discretionary';
 
       if (type === 'Income') {
         bucket = 'Income';
       } else if (['Debt', 'Pension', 'Zakat', 'Loan Repayment'].includes(subcategory)) {
         bucket = 'Financial/Obligatory';
-      } else if (['Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery', 'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa'].includes(subcategory)) {
+      } else if (
+        [
+          'Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery',
+          'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa',
+        ].includes(subcategory)
+      ) {
         bucket = 'Essential';
       }
 
@@ -82,14 +86,14 @@ files.forEach(file => {
         date: isoDate,
         category: String(category).trim(),
         subcategory: String(subcategory || '').trim(),
-        amount_original: Number(amount),
+        amount_original: amount,
         currency: String(currency).toUpperCase(),
         exchange_rate_at_time: rate,
         amount_mvr,
         type,
         bucket,
         is_historical: true,
-        notes: String(notes).trim()
+        notes: String(notes).trim(),
       });
     });
   });
