@@ -1,115 +1,126 @@
 import Dexie from 'dexie';
+import { SEED_DATA } from './seedData';
 import { v4 as uuidv4 } from 'uuid';
 
-export const db = new Dexie('FinanceAppDB');
+export const db = new Dexie('FinanceERP');
 
-// Define database schema version and indexes
-db.version(1).stores({
-  settings: '++id, &uuid, key, syncStatus, updated_at, deleted',
-  bucket_map: '++id, &uuid, bucket, category, syncStatus, updated_at, deleted',
-  transactions: '++id, &uuid, date, category, amount, syncStatus, updated_at, deleted',
-  loans: '++id, &uuid, name, amount, syncStatus, updated_at, deleted'
+db.version(202).stores({
+  transactions: '++id, uuid, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
+  settings: 'key, uuid, syncStatus, updated_at, deleted',
+  loans: '++id, uuid, name, total_amount, start_date, notes, syncStatus, updated_at, deleted',
+  loan_payments: '++id, loan_id, date, amount, transaction_id',
+  zakat_log: '++id, month, total_savings, zakat_due, zakat_paid',
+  exchange_rates: '++id, date_set, rate',
+  bucket_map: '++id, uuid, category, subcategory, bucket, syncStatus, updated_at, deleted'
+}).upgrade(async tx => {
+  const addUuids = async (tableName) => {
+    await tx.table(tableName).toCollection().modify(item => {
+      if (!item.uuid) item.uuid = uuidv4();
+      item.syncStatus = 'pending';
+    });
+  };
+  await addUuids('transactions');
+  await addUuids('loans');
+  await addUuids('bucket_map');
+  
+  await tx.table('settings').toCollection().modify(item => {
+    if (!item.uuid) item.uuid = uuidv4();
+    item.syncStatus = 'pending';
+  });
 });
 
-// Default fallback data for initial setup
 const DEFAULT_BUCKET_MAP = [
-  { bucket: 'Essential', category: 'Groceries' },
-  { bucket: 'Essential', category: 'Utilities' },
-  { bucket: 'Discretionary', category: 'Entertainment' },
-  { bucket: 'Financial', category: 'Investments' },
-  { bucket: 'Savings', category: 'Emergency Fund' }
+  // Personal
+  { category: 'Personal', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Medical', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Tickets', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Transportation', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Grocery', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Samu', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Book', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Wardrobe', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Clothing', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Cosmetics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Donation', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Electronics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Games', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Online Shopping', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Other', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'PC / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Phone / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Restaurant', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Room Rent', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Snacks', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Software', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Staff Shop', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Subscription', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Debt', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Pension', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Zakat', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Loan Repayment', bucket: 'Financial/Obligatory' },
+  // Family
+  { category: 'Family', subcategory: 'Mamma', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bappa', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Dhattha', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Aisu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ahammadhu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ali', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bro', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Faatthu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Combined', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Rent', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Tickets', bucket: 'Essential' },
+  // Boalhadhadige
+  { category: 'Boalhadhadige', subcategory: 'General', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Water', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Electricity', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Food', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Furniture', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Wiring', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Doors', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Tiles', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cements/Building', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Appliances', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Maintenance', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Phone/Internet', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Waste mngmnt.', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cleaning Goods', bucket: 'Discretionary' },
+  // Income
+  { category: 'Income', subcategory: 'Salary/Wages', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Service charge', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Misc.', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Ramadan Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Yearly Bonus', bucket: 'Income' }
 ];
 
-const SEED_DATA = [
-  { date: '2026-01-01', category: 'Groceries', amount: 150, description: 'Initial Grocery Stock' }
-];
-
-/**
- * Initializes default settings, bucket mappings, and seed data securely.
- * Uses bulkPut to ensure idempotent writes and prevent primary key / unique constraint duplication.
- */
 export const initSettings = async () => {
-  try {
-    const settingsCount = await db.settings.count();
-    if (settingsCount === 0) {
-      const defaults = [
-        { key: 'essential_pct', value: 40 }, 
-        { key: 'discretionary_pct', value: 10 },
-        { key: 'financial_pct', value: 15 }, 
-        { key: 'savings_pct', value: 35 },
-        { key: 'nisab_threshold', value: 10000 }, 
-        { key: 'zakat_rate', value: 2.5 },
-        { key: 'current_usd_rate', value: 15.42 }, 
-        { key: 'debt_receivable', value: 0 },
-        { key: 'bank_balance_override', value: '' }, 
-        { key: 'prev_year_balances', value: {} }
-      ];
-      
-      const payload = defaults.map(d => ({
-        ...d,
-        uuid: uuidv4(),
-        syncStatus: 'pending',
-        updated_at: new Date().toISOString(),
-        deleted: false
-      }));
-      
-      await db.settings.bulkPut(payload);
-    }
+  const count = await db.settings.count();
+  if (count === 0) {
+    const defaults = [
+      { key: 'essential_pct', value: 40 }, { key: 'discretionary_pct', value: 10 },
+      { key: 'financial_pct', value: 15 }, { key: 'savings_pct', value: 35 },
+      { key: 'nisab_threshold', value: 10000 }, { key: 'zakat_rate', value: 2.5 },
+      { key: 'current_usd_rate', value: 15.42 }, { key: 'debt_receivable', value: 0 },
+      { key: 'bank_balance_override', value: '' }, { key: 'prev_year_balances', value: {} }
+    ];
+    await db.settings.bulkPut(defaults.map(d => ({ 
+      ...d, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+    })));
+  }
 
-    const mapCount = await db.bucket_map.count();
-    if (mapCount === 0) {
-      const payload = DEFAULT_BUCKET_MAP.map(b => ({
-        ...b,
-        uuid: uuidv4(),
-        syncStatus: 'pending',
-        updated_at: new Date().toISOString(),
-        deleted: false
-      }));
-      
-      await db.bucket_map.bulkPut(payload);
-    }
+  const mapCount = await db.bucket_map.count();
+  if (mapCount === 0) {
+    await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP.map(b => ({ 
+      ...b, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+    })));
+  }
 
-    const txCount = await db.transactions.count();
-    if (txCount === 0 && SEED_DATA.length > 0) {
-      const payload = SEED_DATA.map(t => ({
-        ...t,
-        uuid: uuidv4(),
-        syncStatus: 'pending',
-        updated_at: new Date().toISOString(),
-        deleted: false
-      }));
-      
-      await db.transactions.bulkPut(payload);
-    }
-  } catch (error) {
-    console.error('Error during database initialization:', error);
-    throw error;
+  const txCount = await db.transactions.count();
+  if (txCount === 0 && SEED_DATA.length > 0) {
+    await db.transactions.bulkAdd(SEED_DATA.map(t => ({ 
+      ...t, uuid: uuidv4(), syncStatus: 'pending', updated_at: new Date().toISOString(), deleted: false 
+    })));
   }
 };
-
-/**
- * Utility helper to run a one-time deduplication across tables if duplicates exist.
- */
-export async function pruneDuplicates(tableName) {
-  const table = db[tableName];
-  if (!table) return;
-  
-  const allRows = await table.toArray();
-  const seenUuids = new Set();
-  const duplicateIds = [];
-
-  for (const row of allRows) {
-    if (row.uuid) {
-      if (seenUuids.has(row.uuid)) {
-        duplicateIds.push(row.id);
-      } else {
-        seenUuids.add(row.uuid);
-      }
-    }
-  }
-
-  if (duplicateIds.length > 0) {
-    console.warn(`Found ${duplicateIds.length} duplicates in ${tableName}. Pruning...`);
-    await table.bulkDelete(duplicateIds);
-  }
-}
