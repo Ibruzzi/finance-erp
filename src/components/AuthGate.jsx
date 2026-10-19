@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { syncAll } from '../lib/sync';
+import { useStore } from '../store/useStore';
 import { Loader2, Mail, AlertCircle } from 'lucide-react';
 
 export function AuthGate({ children }) {
@@ -8,48 +9,68 @@ export function AuthGate({ children }) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
-  const [isSyncing, setIsSyncing] = useState(false);
   const [syncError, setSyncError] = useState(null);
+
+  // Remembers who is signed in, so we can tell "same person, tab came back
+  // into view" apart from "someone actually just logged in".
+  const userIdRef = useRef(null);
+
+  // blocking = true  -> full-screen spinner (only used the first time the app opens)
+  // blocking = false -> sync quietly in the background; the screen never flashes
+  const triggerSync = async (blocking) => {
+    setSyncError(null);
+    if (blocking) setLoading(true);
+    try {
+      await syncAll();
+      if (!blocking) {
+        // Background sync finished: refresh the on-screen data without a loading screen.
+        await useStore.getState().loadData();
+      }
+    } catch (e) {
+      console.error('Sync failed:', e);
+      setSyncError(e.message || String(e));
+    } finally {
+      if (blocking) setLoading(false);
+    }
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) {
-        triggerSync();
+        userIdRef.current = session.user.id;
+        triggerSync(true);
       } else {
         setLoading(false);
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, newSession) => {
       console.log('Auth Event:', event);
-      if (event === 'SIGNED_IN') {
-        setSession(session);
-        if (!window.location.hash.includes('access_token')) {
-          triggerSync();
+
+      if (event === 'SIGNED_IN' && newSession) {
+        // Coming back to the tab re-fires SIGNED_IN for the same user.
+        // That is NOT a new login, so do nothing visible.
+        if (userIdRef.current === newSession.user.id) {
+          setSession(newSession);
+          return;
         }
+
+        // A genuinely new login (e.g. clicking the magic link).
+        userIdRef.current = newSession.user.id;
+        setSession(newSession);
+        triggerSync(true);
+      }
+
+      if (event === 'SIGNED_OUT') {
+        userIdRef.current = null;
+        setSession(null);
       }
     });
 
     return () => subscription.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const triggerSync = async () => {
-    setIsSyncing(true);
-    setSyncError(null);
-    try {
-      console.log('Starting Sync...');
-      await syncAll();
-      console.log('Sync Complete!');
-    } catch (e) {
-      console.error('Sync failed:', e);
-      setSyncError(e.message || String(e));
-    } finally {
-      setIsSyncing(false);
-      setLoading(false);
-    }
-  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -67,12 +88,12 @@ export function AuthGate({ children }) {
     }
   };
 
-  if (loading || isSyncing) {
+  if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-blue-600">
         <Loader2 size={32} className="animate-spin mb-4" />
         <p className="text-sm font-semibold text-gray-500">
-          {isSyncing ? 'Syncing your data from the cloud...' : 'Loading...'}
+          {session ? 'Syncing your data from the cloud...' : 'Loading...'}
         </p>
       </div>
     );
@@ -137,7 +158,7 @@ export function AuthGate({ children }) {
             <span className="truncate">Sync failed: {syncError}. Showing local data.</span>
           </div>
           <button
-            onClick={triggerSync}
+            onClick={() => triggerSync(false)}
             className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-xs font-semibold flex-shrink-0"
           >
             Retry

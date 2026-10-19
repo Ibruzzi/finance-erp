@@ -11,7 +11,8 @@ export const useStore = create((set, get) => ({
   isLoading: true,
 
   loadData: async () => {
-    set({ isLoading: true });
+    // Note: isLoading starts as true, so the very first load shows the loading screen.
+    // Later reloads (after a background sync) update quietly with no flash.
     // Filter out deleted rows, but allow rows where 'deleted' is undefined (legacy data)
     const transactions = await db.transactions.filter(t => t.deleted !== true).toArray();
     const settingsArray = await db.settings.filter(s => s.deleted !== true).toArray();
