@@ -24,14 +24,16 @@ export function CustomSelect({
     if (!isOpen) setSearch('');
   }, [isOpen]);
 
-  // Focus search when opened
+  // Force focus on mobile to bring up keyboard immediately
   useEffect(() => {
-    if (isOpen && searchRef.current && options.length > 8) {
-      setTimeout(() => searchRef.current?.focus(), 50);
+    if (isOpen && searchable && searchRef.current) {
+      setTimeout(() => searchRef.current?.focus(), 100);
     }
-  }, [isOpen, options.length]);
+  }, [isOpen, searchable]);
 
-  const showSearch = searchable && options.length > 8;
+  // Always show search if searchable is true
+  const showSearch = searchable;
+  
   const filtered = showSearch && search.trim()
     ? options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
     : options;

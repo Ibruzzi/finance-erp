@@ -8,9 +8,6 @@ const PUSH_CHUNK = 500;
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
 
-/**
- * Fetch every row from a Supabase table for the current user, paginated.
- */
 async function fetchAllRows(table, userId, sinceISO) {
   const allRows = [];
   let from = 0;
@@ -42,10 +39,11 @@ async function fetchAllRows(table, userId, sinceISO) {
 
 export async function pushChanges() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return;
+  if (!session) return false; // Return false to signal failure
 
   const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
   const now = new Date().toISOString();
+  let allSuccessful = true;
 
   for (const table of tables) {
     const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
@@ -82,9 +80,12 @@ export async function pushChanges() {
         }
       } catch (err) {
         console.error(`Error pushing ${table} chunk starting at ${i}:`, err.message);
+        allSuccessful = false;
       }
     }
   }
+  
+  return allSuccessful;
 }
 
 export async function pullChanges(isFirstSync = false) {
@@ -95,7 +96,6 @@ export async function pullChanges(isFirstSync = false) {
   const now = new Date().toISOString();
   const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
 
-  // PHASE 1: Fetch everything into memory first.
   const fetched = {};
   for (const table of tables) {
     try {
@@ -111,32 +111,47 @@ export async function pullChanges(isFirstSync = false) {
     }
   }
 
-  // PHASE 2: Apply to Dexie.
   for (const table of tables) {
     const rows = fetched[table];
     
-    // If it's a first sync, we ALWAYS wipe the local table first.
-    // If the cloud is empty, it will just be empty locally now.
     if (isFirstSync) {
       await db.table(table).clear();
     }
 
     if (!rows || rows.length === 0) continue;
 
+    // Protect pending local edits from being overwritten by older cloud data
+    const existingRows = await db.table(table).toArray();
+    const existingMap = new Map(existingRows.map(r => [r.uuid, r]));
+
     const toPut = rows.map(row => {
       // eslint-disable-next-line no-unused-vars
       const { user_id, id, ...rest } = row;
+      
+      const cloudUpdated = new Date(row.updated_at).getTime();
+      const localRow = existingMap.get(id);
+      
+      // If local is pending and has a newer timestamp, DON'T overwrite it
+      if (localRow && localRow.syncStatus === 'pending') {
+        const localUpdated = new Date(localRow.updated_at).getTime();
+        if (localUpdated > cloudUpdated) {
+          return null; 
+        }
+      }
+
       return {
         ...rest,
         uuid: id, 
         syncStatus: 'synced',
       };
-    });
+    }).filter(Boolean); // Remove nulls
 
     if (table === 'settings') {
       await db.settings.bulkPut(toPut);
     } else {
-      await db.table(table).bulkPut(toPut);
+      if (toPut.length > 0) {
+        await db.table(table).bulkPut(toPut);
+      }
     }
   }
 
@@ -150,9 +165,6 @@ export async function syncAll() {
   const lastSync = getLastSync();
 
   if (!lastSync) {
-    // THIS IS A FRESH INSTALL (or cleared browser)
-    // If cloud has data, pull it down (pullChanges will wipe local first).
-    // If cloud is empty, push local seed up.
     const { count, error } = await supabase
       .from('transactions')
       .select('*', { count: 'exact', head: true })
@@ -166,12 +178,16 @@ export async function syncAll() {
       await pushChanges();
       setLastSync(new Date().toISOString());
     } else {
-      await pullChanges(true); // Pass isFirstSync = true
+      await pullChanges(true);
     }
     return;
   }
 
-  // Normal sync
-  await pushChanges();
-  await pullChanges(false);
+  // PUSH FIRST. If push fails, abort pull to prevent duplicates.
+  const pushSuccess = await pushChanges();
+  if (pushSuccess) {
+    await pullChanges(false);
+  } else {
+    console.warn('Push failed. Aborting pull to prevent data loss/duplication.');
+  }
 }
