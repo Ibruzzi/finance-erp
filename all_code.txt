@@ -1,11 +1,3 @@
-Excludes .env: It won't dump your Supabase keys into the text file.
-
-Excludes package-lock.json: This file is usually 3,000+ lines of dependency noise and will bloat your code dump.
-
-Excludes public/icons: Skips binary image assets.
-
-Excludes .git and node_modules: Keeps the output small and focused purely on your source code.
-
 
 ================================================================================
 FILE: concat_code.sh
@@ -158,10 +150,10 @@ export default defineConfig([
 ================================================================================
 FILE: generate-seed.cjs
 PATH: /home/iburu/finance-erp/generate-seed.cjs
-SIZE: 3914 bytes    LINES: 104
+SIZE: 3686 bytes    LINES: 108
 ================================================================================
 
-  // generate-seed.cjs
+// generate-seed.cjs
 const XLSX = require('xlsx');
 const fs = require('fs');
 const path = require('path');
@@ -183,13 +175,12 @@ console.log(`Found ${files.length} .xlsx files.`);
 files.forEach(file => {
   console.log(`Processing ${file}...`);
   const workbook = XLSX.readFile(path.join(INPUT_DIR, file));
-  
+
   workbook.SheetNames.forEach(sheetName => {
     const sheet = workbook.Sheets[sheetName];
     const rows = XLSX.utils.sheet_to_json(sheet, { defval: null, raw: true });
 
     rows.forEach(row => {
-      // Normalize keys to lowercase to handle both 'Date' and 'date', 'amount_original' and 'Amount'
       const getVal = (key) => {
         if (row[key] !== undefined) return row[key];
         const lowerKey = key.toLowerCase();
@@ -200,17 +191,19 @@ files.forEach(file => {
       const dateVal = getVal('date');
       const category = getVal('category');
       const subcategory = getVal('subcategory');
-      // Check 'amount_original' first, then 'amount'
-      const amount = getVal('amount_original') !== null ? getVal('amount_original') : getVal('amount');
+      const amountRaw =
+        getVal('amount_original') !== null ? getVal('amount_original') : getVal('amount');
       const currency = getVal('currency') || 'MVR';
       const notes = getVal('notes') || '';
 
-      if (!dateVal || !category || amount === undefined || amount === null || amount === 0) return;
+      if (!dateVal || !category) return;
 
-      // Handle Excel Serial Numbers (e.g., 44931) vs Date Strings (e.g., '2023-01-05')
+      // Robust numeric check: catches null, undefined, '', 'abc', NaN.
+      const amount = Number(amountRaw);
+      if (!Number.isFinite(amount) || amount === 0) return;
+
       let parsedDate;
       if (typeof dateVal === 'number') {
-        // Excel epoch starts at 1899-12-30
         const excelEpoch = new Date(Date.UTC(1899, 11, 30));
         parsedDate = new Date(excelEpoch.getTime() + dateVal * 24 * 60 * 60 * 1000);
       } else {
@@ -219,25 +212,28 @@ files.forEach(file => {
 
       if (isNaN(parsedDate.getTime())) return;
 
-      // Convert to local ISO date string safely
       const isoDate = parsedDate.toISOString();
       const year = parsedDate.getFullYear();
-      
+
       yearCounts[year] = (yearCounts[year] || 0) + 1;
 
       const type = String(category).toLowerCase().includes('income') ? 'Income' : 'Expense';
-      
-      const rate = String(currency).toUpperCase() === 'USD' ? 15.42 : 1;
-      const amount_mvr = Number(amount) * rate;
 
-      // Default bucket mapping
+      const rate = String(currency).toUpperCase() === 'USD' ? 15.42 : 1;
+      const amount_mvr = amount * rate;
+
       let bucket = 'Discretionary';
 
       if (type === 'Income') {
         bucket = 'Income';
       } else if (['Debt', 'Pension', 'Zakat', 'Loan Repayment'].includes(subcategory)) {
         bucket = 'Financial/Obligatory';
-      } else if (['Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery', 'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa'].includes(subcategory)) {
+      } else if (
+        [
+          'Bills', 'Medical', 'Tickets', 'Transportation', 'Grocery',
+          'Samu', 'General', 'Water', 'Electricity', 'Food', 'Rent', 'Bappa',
+        ].includes(subcategory)
+      ) {
         bucket = 'Essential';
       }
 
@@ -245,14 +241,14 @@ files.forEach(file => {
         date: isoDate,
         category: String(category).trim(),
         subcategory: String(subcategory || '').trim(),
-        amount_original: Number(amount),
+        amount_original: amount,
         currency: String(currency).toUpperCase(),
         exchange_rate_at_time: rate,
         amount_mvr,
         type,
         bucket,
         is_historical: true,
-        notes: String(notes).trim()
+        notes: String(notes).trim(),
       });
     });
   });
@@ -352,19 +348,17 @@ export default { plugins: { '@tailwindcss/postcss': {}, autoprefixer: {} } }
 ================================================================================
 FILE: public/sw.js
 PATH: /home/iburu/finance-erp/public/sw.js
-SIZE: 1311 bytes    LINES: 46
+SIZE: 1305 bytes    LINES: 52
 ================================================================================
 
 // public/sw.js
 
-const CACHE_NAME = 'finance-erp-v1';
+const CACHE_NAME = 'finance-erp-v2';
 
-// When the app installs, cache the essential shell
-self.addEventListener('install', (event) => {
-  self.skipWaiting(); // Activate immediately
+self.addEventListener('install', () => {
+  self.skipWaiting();
 });
 
-// When the app activates, clean up old caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -380,15 +374,24 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch strategy: Network First, fallback to cache
 self.addEventListener('fetch', (event) => {
-  // Don't intercept API calls or non-GET requests if you add them later
   if (event.request.method !== 'GET') return;
+
+  // Never cache Supabase API or auth traffic:
+  // - API responses are user-scoped and would leak between sessions.
+  // - Cached API data would short-circuit fresh pulls.
+  try {
+    const url = new URL(event.request.url);
+    if (url.pathname.startsWith('/rest/') || url.pathname.startsWith('/auth/')) {
+      return;
+    }
+  } catch {
+    // If URL parsing fails, fall through to normal handling.
+  }
 
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        // If the network request is successful, clone it and store it in the cache
         const responseClone = response.clone();
         caches.open(CACHE_NAME).then((cache) => {
           cache.put(event.request, responseClone);
@@ -396,7 +399,6 @@ self.addEventListener('fetch', (event) => {
         return response;
       })
       .catch(() => {
-        // If the network fails (offline), try to serve the cached version
         return caches.match(event.request);
       })
   );
@@ -679,62 +681,72 @@ export default App;
 ================================================================================
 FILE: src/components/AddTransactionModal.jsx
 PATH: /home/iburu/finance-erp/src/components/AddTransactionModal.jsx
-SIZE: 8102 bytes    LINES: 210
+SIZE: 8351 bytes    LINES: 232
 ================================================================================
 
 import { useState } from 'react';
 import { X, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import { CustomSelect } from './CustomSelect';
 
-export function AddTransactionModal({ onClose, onSave, settings, initialData, getBucketFromMap, getSubcategoriesFor, getCategories, loans }) {
+export function AddTransactionModal({
+  onClose,
+  onSave,
+  settings,
+  initialData,
+  getBucketFromMap,
+  getSubcategoriesFor,
+  getCategories,
+  loans,
+}) {
   const [type, setType] = useState(initialData?.type || 'Expense');
   const [category, setCategory] = useState(initialData?.category || 'Personal');
   const [subcategory, setSubcategory] = useState(initialData?.subcategory || '');
   const [amount, setAmount] = useState(initialData?.amount_original || '');
   const [currency, setCurrency] = useState(initialData?.currency || 'MVR');
   const [notes, setNotes] = useState(initialData?.notes || '');
-  const [loanId, setLoanId] = useState(initialData?.loan_id || '');
+  const [loanUuid, setLoanUuid] = useState(initialData?.loan_uuid || '');
 
   const isIncome = type === 'Income';
   const allCategories = getCategories();
-  const availableCategories = isIncome 
-    ? ['Income'] 
+  const availableCategories = isIncome
+    ? ['Income']
     : allCategories.filter(c => c !== 'Income');
-  
+
   const availableSubcategories = getSubcategoriesFor(category);
 
   const derivedBucket = isIncome ? 'Income' : getBucketFromMap(category, subcategory);
-  const isLoanRepayment = !isIncome && category === 'Personal' && subcategory === 'Loan Repayment';
+  const isLoanRepayment =
+    !isIncome && category === 'Personal' && subcategory === 'Loan Repayment';
 
   const handleTypeChange = (newType) => {
     setType(newType);
     if (newType === 'Income') setCategory('Income');
     else setCategory('Personal');
     setSubcategory('');
-    setLoanId('');
+    setLoanUuid('');
   };
 
   const handleCategoryChange = (newCat) => {
     setCategory(newCat);
     setSubcategory('');
-    setLoanId('');
+    setLoanUuid('');
   };
 
   const handleSubcategoryChange = (newSub) => {
     setSubcategory(newSub);
     if (!(category === 'Personal' && newSub === 'Loan Repayment')) {
-      setLoanId('');
+      setLoanUuid('');
     }
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!amount || !subcategory) return;
-    if (isLoanRepayment && !loanId) {
+    if (isLoanRepayment && !loanUuid) {
       alert('Please select which loan this repayment is for.');
       return;
     }
-    
+
     onSave({
       type,
       category,
@@ -743,21 +755,21 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
       currency,
       bucket: derivedBucket,
       notes,
-      loan_id: isLoanRepayment ? parseInt(loanId) : null,
-      exchange_rate_at_time: initialData?.exchange_rate_at_time
+      loan_uuid: isLoanRepayment ? loanUuid : null,
+      exchange_rate_at_time: initialData?.exchange_rate_at_time,
     });
   };
 
   const loanDisplay = loans.map(l => ({
-    id: l.id,
-    label: `${l.name} (RF ${l.total_amount.toFixed(2)})`
+    id: l.uuid,
+    label: `${l.name} (RF ${l.total_amount.toFixed(2)})`,
   }));
-  const selectedLoanLabel = loanDisplay.find(l => String(l.id) === String(loanId))?.label || '';
+  const selectedLoanLabel =
+    loanDisplay.find(l => String(l.id) === String(loanUuid))?.label || '';
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center">
       <div className="bg-white w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[90vh] overflow-y-auto">
-        
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-bold">{initialData ? 'Edit' : 'Add'} Transaction</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
@@ -766,19 +778,22 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          
           <div className="flex gap-2 bg-gray-100 p-1 rounded-lg">
             <button
               type="button"
               onClick={() => handleTypeChange('Expense')}
-              className={`flex-1 py-2 rounded-md text-sm font-semibold transition ${type === 'Expense' ? 'bg-white text-red-600 shadow' : 'text-gray-500'}`}
+              className={`flex-1 py-2 rounded-md text-sm font-semibold transition ${
+                type === 'Expense' ? 'bg-white text-red-600 shadow' : 'text-gray-500'
+              }`}
             >
               <ArrowDownCircle size={14} className="inline mr-1" /> Expense
             </button>
             <button
               type="button"
               onClick={() => handleTypeChange('Income')}
-              className={`flex-1 py-2 rounded-md text-sm font-semibold transition ${type === 'Income' ? 'bg-white text-green-600 shadow' : 'text-gray-500'}`}
+              className={`flex-1 py-2 rounded-md text-sm font-semibold transition ${
+                type === 'Income' ? 'bg-white text-green-600 shadow' : 'text-gray-500'
+              }`}
             >
               <ArrowUpCircle size={14} className="inline mr-1" /> Income
             </button>
@@ -787,8 +802,8 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Amount</label>
             <div className="flex gap-2 items-stretch">
-              <input 
-                type="number" 
+              <input
+                type="number"
                 step="0.01"
                 required
                 value={amount}
@@ -797,7 +812,7 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
                 placeholder="0.00"
               />
               <div className="w-24 flex-shrink-0">
-                <CustomSelect 
+                <CustomSelect
                   value={currency}
                   onChange={setCurrency}
                   options={['MVR', 'USD']}
@@ -809,14 +824,18 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
             </div>
             {currency === 'USD' && (
               <div className="text-xs text-blue-600 mt-1">
-                ≈ RF {(parseFloat(amount || 0) * (settings.current_usd_rate || 15.42)).toFixed(2)} @ {settings.current_usd_rate} MVR/USD
+                ≈ RF{' '}
+                {(
+                  parseFloat(amount || 0) * (settings.current_usd_rate || 15.42)
+                ).toFixed(2)}{' '}
+                @ {settings.current_usd_rate} MVR/USD
               </div>
             )}
           </div>
 
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Category</label>
-            <CustomSelect 
+            <CustomSelect
               value={category}
               onChange={handleCategoryChange}
               options={availableCategories}
@@ -826,7 +845,7 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
 
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">Subcategory</label>
-            <CustomSelect 
+            <CustomSelect
               value={subcategory}
               onChange={handleSubcategoryChange}
               options={availableSubcategories}
@@ -843,11 +862,11 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
                   No loans yet. Add one via the Loans button in the header first.
                 </div>
               ) : (
-                <CustomSelect 
+                <CustomSelect
                   value={selectedLoanLabel}
                   onChange={(label) => {
                     const found = loanDisplay.find(l => l.label === label);
-                    setLoanId(found ? found.id : '');
+                    setLoanUuid(found ? found.id : '');
                   }}
                   options={loanDisplay.map(l => l.label)}
                   placeholder="-- Select loan --"
@@ -859,19 +878,25 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
           )}
 
           {type === 'Expense' && subcategory && !isLoanRepayment && (
-            <div className={`p-3 rounded-lg flex items-center gap-2 text-sm font-semibold ${
-              derivedBucket === 'Essential' ? 'bg-green-50 text-green-700 border border-green-200' :
-              derivedBucket === 'Discretionary' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
-              'bg-purple-50 text-purple-700 border border-purple-200'
-            }`}>
+            <div
+              className={`p-3 rounded-lg flex items-center gap-2 text-sm font-semibold ${
+                derivedBucket === 'Essential'
+                  ? 'bg-green-50 text-green-700 border border-green-200'
+                  : derivedBucket === 'Discretionary'
+                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                  : 'bg-purple-50 text-purple-700 border border-purple-200'
+              }`}
+            >
               <span className="text-xs uppercase opacity-70">Auto Bucket:</span>
               <span>{derivedBucket}</span>
             </div>
           )}
 
           <div>
-            <label className="text-xs font-semibold text-gray-500 mb-1 block">Notes (Optional)</label>
-            <input 
+            <label className="text-xs font-semibold text-gray-500 mb-1 block">
+              Notes (Optional)
+            </label>
+            <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
@@ -880,13 +905,12 @@ export function AddTransactionModal({ onClose, onSave, settings, initialData, ge
             />
           </div>
 
-          <button 
+          <button
             type="submit"
             className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-blue-700 transition"
           >
             {initialData ? 'Update Transaction' : 'Save Transaction'}
           </button>
-
         </form>
       </div>
     </div>
@@ -927,13 +951,13 @@ export function AppTabs({ active, onChange, tabs }) {
 ================================================================================
 FILE: src/components/AuthGate.jsx
 PATH: /home/iburu/finance-erp/src/components/AuthGate.jsx
-SIZE: 4103 bytes    LINES: 123
+SIZE: 4761 bytes    LINES: 150
 ================================================================================
 
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { syncAll } from '../lib/sync';
-import { Loader2, Mail } from 'lucide-react';
+import { Loader2, Mail, AlertCircle } from 'lucide-react';
 
 export function AuthGate({ children }) {
   const [session, setSession] = useState(null);
@@ -941,25 +965,22 @@ export function AuthGate({ children }) {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(null);
 
   useEffect(() => {
-    // Check active session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) {
-        // If we have a session, trigger sync
         triggerSync();
       } else {
         setLoading(false);
       }
     });
 
-    // Listen for auth changes (like clicking the magic link)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      console.log("Auth Event:", event);
+      console.log('Auth Event:', event);
       if (event === 'SIGNED_IN') {
         setSession(session);
-        // Force a reload to ensure the session is fully picked up by the browser
         if (!window.location.hash.includes('access_token')) {
           triggerSync();
         }
@@ -967,19 +988,22 @@ export function AuthGate({ children }) {
     });
 
     return () => subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const triggerSync = async () => {
     setIsSyncing(true);
+    setSyncError(null);
     try {
-      console.log("Starting Sync...");
+      console.log('Starting Sync...');
       await syncAll();
-      console.log("Sync Complete!");
+      console.log('Sync Complete!');
     } catch (e) {
-      console.error("Sync failed:", e);
+      console.error('Sync failed:', e);
+      setSyncError(e.message || String(e));
     } finally {
       setIsSyncing(false);
-      setLoading(false); // Only show the app after sync finishes!
+      setLoading(false);
     }
   };
 
@@ -989,7 +1013,7 @@ export function AuthGate({ children }) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: window.location.origin, // Uses the current URL (localhost or vercel)
+        emailRedirectTo: window.location.origin,
       },
     });
     if (error) {
@@ -1004,7 +1028,7 @@ export function AuthGate({ children }) {
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-blue-600">
         <Loader2 size={32} className="animate-spin mb-4" />
         <p className="text-sm font-semibold text-gray-500">
-          {isSyncing ? "Syncing your data from the cloud..." : "Loading..."}
+          {isSyncing ? 'Syncing your data from the cloud...' : 'Loading...'}
         </p>
       </div>
     );
@@ -1016,12 +1040,15 @@ export function AuthGate({ children }) {
         <div className="bg-white p-6 rounded-2xl shadow-md w-full max-w-sm">
           <h1 className="text-2xl font-bold text-center mb-2 text-gray-800">Finance ERP</h1>
           <p className="text-center text-gray-500 text-sm mb-6">Sign in to sync your data.</p>
-          
+
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="text-xs font-semibold text-gray-500 mb-1 block">Email Address</label>
               <div className="relative">
-                <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <Mail
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                />
                 <input
                   type="email"
                   required
@@ -1032,7 +1059,7 @@ export function AuthGate({ children }) {
                 />
               </div>
             </div>
-            
+
             <button
               type="submit"
               className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition"
@@ -1042,7 +1069,13 @@ export function AuthGate({ children }) {
           </form>
 
           {message && (
-            <div className={`mt-4 p-3 rounded-lg text-sm text-center ${message.includes('Check') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <div
+              className={`mt-4 p-3 rounded-lg text-sm text-center ${
+                message.includes('Check')
+                  ? 'bg-green-50 text-green-700'
+                  : 'bg-red-50 text-red-700'
+              }`}
+            >
               {message}
             </div>
           )}
@@ -1051,7 +1084,25 @@ export function AuthGate({ children }) {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {syncError && (
+        <div className="fixed top-0 left-0 right-0 z-[100] bg-red-600 text-white text-sm p-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle size={16} className="flex-shrink-0" />
+            <span className="truncate">Sync failed: {syncError}. Showing local data.</span>
+          </div>
+          <button
+            onClick={triggerSync}
+            className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded text-xs font-semibold flex-shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {children}
+    </>
+  );
 }
 
 ================================================================================
@@ -1255,7 +1306,7 @@ export function CategoryTotals({ totals, grandTotal }) {
 ================================================================================
 FILE: src/components/CustomSelect.jsx
 PATH: /home/iburu/finance-erp/src/components/CustomSelect.jsx
-SIZE: 3808 bytes    LINES: 116
+SIZE: 3854 bytes    LINES: 118
 ================================================================================
 
 import { useState, useRef, useEffect } from 'react';
@@ -1284,14 +1335,16 @@ export function CustomSelect({
     if (!isOpen) setSearch('');
   }, [isOpen]);
 
-  // Focus search when opened
+  // Force focus on mobile to bring up keyboard immediately
   useEffect(() => {
-    if (isOpen && searchRef.current && options.length > 8) {
-      setTimeout(() => searchRef.current?.focus(), 50);
+    if (isOpen && searchable && searchRef.current) {
+      setTimeout(() => searchRef.current?.focus(), 100);
     }
-  }, [isOpen, options.length]);
+  }, [isOpen, searchable]);
 
-  const showSearch = searchable && options.length > 8;
+  // Always show search if searchable is true
+  const showSearch = searchable;
+  
   const filtered = showSearch && search.trim()
     ? options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
     : options;
@@ -2427,7 +2480,7 @@ export function LoanForm({ initialData, onCancel, onSave }) {
 ================================================================================
 FILE: src/components/LoansModal.jsx
 PATH: /home/iburu/finance-erp/src/components/LoansModal.jsx
-SIZE: 5400 bytes    LINES: 122
+SIZE: 5744 bytes    LINES: 136
 ================================================================================
 
 import { useState } from 'react';
@@ -2440,10 +2493,11 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
   const [editingLoan, setEditingLoan] = useState(null);
 
   const handleDelete = async (loan) => {
-    const paid = getLoanPaid(loan.id);
-    const confirmMsg = paid > 0 
-      ? `This loan has RF ${formatMoney(paid)} in recorded payments. Deleting will unlink those transactions but keep them as expenses. Continue?`
-      : `Delete loan "${loan.name}"?`;
+    const paid = getLoanPaid(loan.uuid);
+    const confirmMsg =
+      paid > 0
+        ? `This loan has RF ${formatMoney(paid)} in recorded payments. Deleting will unlink those transactions but keep them as expenses. Continue?`
+        : `Delete loan "${loan.name}"?`;
     if (window.confirm(confirmMsg)) {
       await deleteLoan(loan.id);
     }
@@ -2452,7 +2506,6 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-white w-full max-w-2xl rounded-t-2xl sm:rounded-2xl p-4 sm:p-5 max-h-[90vh] overflow-y-auto overflow-x-hidden">
-        
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-bold flex items-center gap-2">
             <CreditCard size={20} className="text-red-500" /> Loans
@@ -2464,7 +2517,7 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
 
         {!isAdding && !editingLoan && (
           <>
-            <button 
+            <button
               onClick={() => setIsAdding(true)}
               className="w-full mb-4 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition flex items-center justify-center gap-2"
             >
@@ -2478,7 +2531,7 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
             ) : (
               <div className="space-y-3">
                 {loans.map(loan => {
-                  const paid = getLoanPaid(loan.id);
+                  const paid = getLoanPaid(loan.uuid);
                   const remaining = Math.max(0, loan.total_amount - paid);
                   const pct = loan.total_amount > 0 ? (paid / loan.total_amount) * 100 : 0;
                   return (
@@ -2493,19 +2546,27 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
                           )}
                         </div>
                         <div className="flex gap-1 flex-shrink-0">
-                          <button onClick={() => setEditingLoan(loan)} className="p-1.5 text-blue-500 hover:bg-blue-100 rounded">
+                          <button
+                            onClick={() => setEditingLoan(loan)}
+                            className="p-1.5 text-blue-500 hover:bg-blue-100 rounded"
+                          >
                             <Pencil size={14} />
                           </button>
-                          <button onClick={() => handleDelete(loan)} className="p-1.5 text-red-500 hover:bg-red-100 rounded">
+                          <button
+                            onClick={() => handleDelete(loan)}
+                            className="p-1.5 text-red-500 hover:bg-red-100 rounded"
+                          >
                             <Trash2 size={14} />
                           </button>
                         </div>
                       </div>
-                      
+
                       <div className="grid grid-cols-3 gap-2 text-xs mb-2">
                         <div>
                           <div className="text-gray-400">Total</div>
-                          <div className="font-semibold text-gray-700">RF {formatMoney(loan.total_amount)}</div>
+                          <div className="font-semibold text-gray-700">
+                            RF {formatMoney(loan.total_amount)}
+                          </div>
                         </div>
                         <div>
                           <div className="text-gray-400">Paid</div>
@@ -2513,17 +2574,21 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
                         </div>
                         <div>
                           <div className="text-gray-400">Remaining</div>
-                          <div className="font-semibold text-red-600">RF {formatMoney(remaining)}</div>
+                          <div className="font-semibold text-red-600">
+                            RF {formatMoney(remaining)}
+                          </div>
                         </div>
                       </div>
 
                       <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                        <div 
+                        <div
                           className="bg-green-500 h-full transition-all"
                           style={{ width: `${Math.min(100, pct)}%` }}
                         ></div>
                       </div>
-                      <div className="text-[10px] text-gray-400 mt-1 text-right">{pct.toFixed(1)}% paid</div>
+                      <div className="text-[10px] text-gray-400 mt-1 text-right">
+                        {pct.toFixed(1)}% paid
+                      </div>
                     </div>
                   );
                 })}
@@ -2533,9 +2598,12 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
         )}
 
         {(isAdding || editingLoan) && (
-          <LoanForm 
+          <LoanForm
             initialData={editingLoan}
-            onCancel={() => { setIsAdding(false); setEditingLoan(null); }}
+            onCancel={() => {
+              setIsAdding(false);
+              setEditingLoan(null);
+            }}
             onSave={async (data) => {
               if (editingLoan) {
                 await updateLoan(editingLoan.id, data);
@@ -2547,7 +2615,6 @@ export function LoansModal({ onClose, loans, getLoanPaid, addLoan, updateLoan, d
             }}
           />
         )}
-
       </div>
     </div>
   );
@@ -3171,7 +3238,7 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
 ================================================================================
 FILE: src/components/TotalDebtCard.jsx
 PATH: /home/iburu/finance-erp/src/components/TotalDebtCard.jsx
-SIZE: 1078 bytes    LINES: 27
+SIZE: 1101 bytes    LINES: 29
 ================================================================================
 
 import { Wallet } from 'lucide-react';
@@ -3189,9 +3256,11 @@ export function TotalDebtCard({ totalDebt, loans, onManage }) {
             <span className="text-xs font-semibold uppercase">Total Debt Remaining</span>
           </div>
           <div className="text-xl font-bold text-gray-800 truncate">RF {formatMoney(totalDebt)}</div>
-          <div className="text-xs text-gray-400">across {loans.length} loan{loans.length !== 1 ? 's' : ''}</div>
+          <div className="text-xs text-gray-400">
+            across {loans.length} loan{loans.length !== 1 ? 's' : ''}
+          </div>
         </div>
-        <button 
+        <button
           onClick={onManage}
           className="text-xs bg-gray-100 hover:bg-gray-200 px-3 py-2 rounded-lg font-semibold text-gray-700 flex-shrink-0"
         >
@@ -3205,7 +3274,7 @@ export function TotalDebtCard({ totalDebt, loans, onManage }) {
 ================================================================================
 FILE: src/components/YearlySummary.jsx
 PATH: /home/iburu/finance-erp/src/components/YearlySummary.jsx
-SIZE: 8649 bytes    LINES: 188
+SIZE: 9139 bytes    LINES: 192
 ================================================================================
 
 import React, { useMemo, useState, Fragment } from 'react';
@@ -3241,11 +3310,12 @@ function SummaryTable({ title, tone, data, type }) {
           <table className="min-w-full text-sm">
             <thead className={headerBg}>
               <tr>
-                <th className="sticky left-0 bg-inherit text-left px-3 py-2 font-semibold text-gray-700 z-10 min-w-[140px]">
+                {/* FIXED: Added explicit solid background and fixed width for the sticky column */}
+                <th className="sticky left-0 bg-inherit text-left px-3 py-2 font-semibold text-gray-700 z-20 min-w-[140px] max-w-[140px] truncate shadow-[1px_0_0_0_#e5e7eb]">
                   Category
                 </th>
                 {years.map(y => (
-                  <th key={y} className="px-3 py-2 font-semibold text-gray-700 text-right whitespace-nowrap">
+                  <th key={y} className="px-3 py-2 font-semibold text-gray-700 text-right whitespace-nowrap min-w-[80px]">
                     {y}
                   </th>
                 ))}
@@ -3269,7 +3339,8 @@ function SummaryTable({ title, tone, data, type }) {
                       onClick={() => toggleExpand(r.category)}
                       className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
                     >
-                      <td className="sticky left-0 bg-white px-3 py-2 font-semibold text-gray-700 z-10 truncate max-w-[160px]">
+                      {/* FIXED: Solid background and shadow for sticky column */}
+                      <td className="sticky left-0 bg-white px-3 py-2 font-semibold text-gray-700 z-10 truncate max-w-[140px] shadow-[1px_0_0_0_#f3f4f6]">
                         <div className="flex items-center gap-1">
                           {isOpen 
                             ? <ChevronDown size={14} className="text-gray-400 flex-shrink-0" /> 
@@ -3294,7 +3365,8 @@ function SummaryTable({ title, tone, data, type }) {
                     {/* --- Subcategory Rows --- */}
                     {isOpen && subcategories.map(sub => (
                       <tr key={`${r.category}-${sub.subcategory}`} className="bg-gray-50/40 border-t border-gray-50">
-                        <td className="sticky left-0 bg-gray-50/90 px-3 py-1.5 text-xs text-gray-500 z-10 truncate max-w-[160px] pl-8">
+                        {/* FIXED: Solid background for sticky column */}
+                        <td className="sticky left-0 bg-[#fafafa] px-3 py-1.5 text-xs text-gray-500 z-10 truncate max-w-[140px] pl-8 shadow-[1px_0_0_0_#f3f4f6]">
                           {sub.subcategory || '(No subcategory)'}
                         </td>
                         {years.map(y => (
@@ -3316,7 +3388,8 @@ function SummaryTable({ title, tone, data, type }) {
 
               {/* --- Grand Total Row --- */}
               <tr className={`border-t-2 ${borderCol} bg-gray-50 font-bold`}>
-                <td className="sticky left-0 bg-gray-50 px-3 py-2 text-gray-900 z-10">
+                {/* FIXED: Solid background for sticky column */}
+                <td className="sticky left-0 bg-gray-50 px-3 py-2 text-gray-900 z-10 truncate max-w-[140px] shadow-[1px_0_0_0_#e5e7eb]">
                   All {title}
                 </td>
                 {years.map(y => (
@@ -3534,16 +3607,15 @@ export function ZakatPaidModal({ onClose, onConfirm, suggestedAmount }) {
 ================================================================================
 FILE: src/db/database.js
 PATH: /home/iburu/finance-erp/src/db/database.js
-SIZE: 2796 bytes    LINES: 67
+SIZE: 7180 bytes    LINES: 126
 ================================================================================
 
 import Dexie from 'dexie';
 import { SEED_DATA } from './seedData';
-import { v4 as uuidv4 } from 'uuid'; // We need this package
+import { v4 as uuidv4 } from 'uuid';
 
 export const db = new Dexie('FinanceERP');
 
-// Note: We are bumping to version 202 to add the 'uuid' index
 db.version(202).stores({
   transactions: '++id, uuid, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
   settings: 'key, uuid, syncStatus, updated_at, deleted',
@@ -3553,18 +3625,16 @@ db.version(202).stores({
   exchange_rates: '++id, date_set, rate',
   bucket_map: '++id, uuid, category, subcategory, bucket, syncStatus, updated_at, deleted'
 }).upgrade(async tx => {
-  // Add UUIDs to all existing local rows
   const addUuids = async (tableName) => {
     await tx.table(tableName).toCollection().modify(item => {
       if (!item.uuid) item.uuid = uuidv4();
-      item.syncStatus = 'pending'; // Force a re-sync with the new UUIDs
+      item.syncStatus = 'pending';
     });
   };
   await addUuids('transactions');
   await addUuids('loans');
   await addUuids('bucket_map');
   
-  // For settings, we generate UUIDs too
   await tx.table('settings').toCollection().modify(item => {
     if (!item.uuid) item.uuid = uuidv4();
     item.syncStatus = 'pending';
@@ -3572,7 +3642,69 @@ db.version(202).stores({
 });
 
 const DEFAULT_BUCKET_MAP = [
-  // ... KEEP YOUR EXISTING DEFAULT_BUCKET_MAP HERE ...
+  // Personal
+  { category: 'Personal', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Medical', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Tickets', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Transportation', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Grocery', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Samu', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Book', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Wardrobe', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Clothing', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Cosmetics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Donation', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Electronics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Games', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Online Shopping', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Other', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'PC / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Phone / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Restaurant', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Room Rent', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Snacks', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Software', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Staff Shop', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Subscription', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Debt', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Pension', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Zakat', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Loan Repayment', bucket: 'Financial/Obligatory' },
+  // Family
+  { category: 'Family', subcategory: 'Mamma', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bappa', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Dhattha', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Aisu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ahammadhu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ali', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bro', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Faatthu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Combined', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Rent', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Tickets', bucket: 'Essential' },
+  // Boalhadhadige
+  { category: 'Boalhadhadige', subcategory: 'General', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Water', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Electricity', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Food', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Furniture', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Wiring', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Doors', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Tiles', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cements/Building', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Appliances', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Maintenance', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Phone/Internet', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Waste mngmnt.', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cleaning Goods', bucket: 'Discretionary' },
+  // Income
+  { category: 'Income', subcategory: 'Salary/Wages', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Service charge', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Misc.', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Ramadan Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Yearly Bonus', bucket: 'Income' }
 ];
 
 export const initSettings = async () => {
@@ -3608,7 +3740,7 @@ export const initSettings = async () => {
 ================================================================================
 FILE: src/db/seedData.js
 PATH: /home/iburu/finance-erp/src/db/seedData.js
-SIZE: 822940 bytes    LINES: 33193
+SIZE: 821977 bytes    LINES: 33154
 ================================================================================
 
 // Auto-generated by generate-seed.cjs
@@ -3929,32 +4061,6 @@ export const SEED_DATA = [
   {
     "date": "2018-01-15T00:00:00.000Z",
     "category": "Family",
-    "subcategory": "Ali",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
-    "subcategory": "Bro",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
     "subcategory": "Faatthu",
     "amount_original": 96.4,
     "currency": "MVR",
@@ -3962,19 +4068,6 @@ export const SEED_DATA = [
     "amount_mvr": 96.4,
     "type": "Expense",
     "bucket": "Discretionary",
-    "is_historical": true,
-    "notes": "2018 aggregates"
-  },
-  {
-    "date": "2018-01-15T00:00:00.000Z",
-    "category": "Family",
-    "subcategory": "Tickets",
-    "amount_original": null,
-    "currency": "MVR",
-    "exchange_rate_at_time": 1,
-    "amount_mvr": null,
-    "type": "Expense",
-    "bucket": "Essential",
     "is_historical": true,
     "notes": "2018 aggregates"
   },
@@ -36893,22 +36986,55 @@ export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '');
 ================================================================================
 FILE: src/lib/sync.js
 PATH: /home/iburu/finance-erp/src/lib/sync.js
-SIZE: 3940 bytes    LINES: 123
+SIZE: 5676 bytes    LINES: 193
 ================================================================================
 
 import { supabase } from './supabaseClient';
 import { db } from '../db/database';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
+const PAGE_SIZE = 1000;
+const PUSH_CHUNK = 500;
+
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
 
+async function fetchAllRows(table, userId, sinceISO) {
+  const allRows = [];
+  let from = 0;
+
+  while (true) {
+    let query = supabase
+      .from(table)
+      .select('*')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+
+    if (sinceISO) {
+      query = query.gt('updated_at', sinceISO);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    if (!data || data.length === 0) break;
+    allRows.push(...data);
+
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+
+  return allRows;
+}
+
 export async function pushChanges() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return;
+  if (!session) return false; // Return false to signal failure
 
   const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
   const now = new Date().toISOString();
+  let allSuccessful = true;
 
   for (const table of tables) {
     const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
@@ -36921,26 +37047,36 @@ export async function pushChanges() {
         id: uuid, 
         ...rest,
         user_id: session.user.id,
-        updated_at: now
+        updated_at: now,
       };
     });
 
-    try {
-      if (table === 'settings') {
-        const { error } = await supabase.from(table).upsert(toPush, { onConflict: 'user_id,key' });
-        if (error) throw error;
-        const syncedKeys = pending.map(p => p.key);
-        await db.settings.where('key').anyOf(syncedKeys).modify({ syncStatus: 'synced' });
-      } else {
-        const { error } = await supabase.from(table).upsert(toPush);
-        if (error) throw error;
-        const syncedUuids = pending.map(p => p.uuid);
-        await db.table(table).where('uuid').anyOf(syncedUuids).modify({ syncStatus: 'synced' });
+    for (let i = 0; i < toPush.length; i += PUSH_CHUNK) {
+      const chunk = toPush.slice(i, i + PUSH_CHUNK);
+      const chunkPending = pending.slice(i, i + PUSH_CHUNK);
+
+      try {
+        if (table === 'settings') {
+          const { error } = await supabase
+            .from(table)
+            .upsert(chunk, { onConflict: 'user_id,key' });
+          if (error) throw error;
+          const keys = chunkPending.map(p => p.key);
+          await db.settings.where('key').anyOf(keys).modify({ syncStatus: 'synced' });
+        } else {
+          const { error } = await supabase.from(table).upsert(chunk);
+          if (error) throw error;
+          const uuids = chunkPending.map(p => p.uuid);
+          await db.table(table).where('uuid').anyOf(uuids).modify({ syncStatus: 'synced' });
+        }
+      } catch (err) {
+        console.error(`Error pushing ${table} chunk starting at ${i}:`, err.message);
+        allSuccessful = false;
       }
-    } catch (err) {
-      console.error(`Error pushing ${table}:`, err.message);
     }
   }
+  
+  return allSuccessful;
 }
 
 export async function pullChanges(isFirstSync = false) {
@@ -36951,43 +37087,65 @@ export async function pullChanges(isFirstSync = false) {
   const now = new Date().toISOString();
   const tables = ['transactions', 'settings', 'loans', 'bucket_map'];
 
+  const fetched = {};
   for (const table of tables) {
     try {
-      let query = supabase
-        .from(table)
-        .select('*')
-        .eq('user_id', session.user.id)
-        .range(0, 5000); // <--- THE FIX: Fetch up to 5,000 rows
-
-      if (!isFirstSync) {
-        query = query.gt('updated_at', lastSync);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        const toPut = data.map(row => {
-          // eslint-disable-next-line no-unused-vars
-          const { user_id, id, ...rest } = row;
-          return {
-            ...rest,
-            uuid: id, 
-            syncStatus: 'synced'
-          };
-        });
-
-        if (table === 'settings') {
-          await db.settings.bulkPut(toPut);
-        } else {
-          if (isFirstSync) await db.table(table).clear();
-          await db.table(table).bulkPut(toPut); 
-        }
-      }
+      fetched[table] = await fetchAllRows(
+        table,
+        session.user.id,
+        isFirstSync ? null : lastSync
+      );
     } catch (err) {
-      console.error(`Error pulling ${table}:`, err.message);
+      console.error(`Error fetching ${table}:`, err.message);
+      if (isFirstSync) throw err;
+      fetched[table] = [];
     }
   }
+
+  for (const table of tables) {
+    const rows = fetched[table];
+    
+    if (isFirstSync) {
+      await db.table(table).clear();
+    }
+
+    if (!rows || rows.length === 0) continue;
+
+    // Protect pending local edits from being overwritten by older cloud data
+    const existingRows = await db.table(table).toArray();
+    const existingMap = new Map(existingRows.map(r => [r.uuid, r]));
+
+    const toPut = rows.map(row => {
+      // eslint-disable-next-line no-unused-vars
+      const { user_id, id, ...rest } = row;
+      
+      const cloudUpdated = new Date(row.updated_at).getTime();
+      const localRow = existingMap.get(id);
+      
+      // If local is pending and has a newer timestamp, DON'T overwrite it
+      if (localRow && localRow.syncStatus === 'pending') {
+        const localUpdated = new Date(localRow.updated_at).getTime();
+        if (localUpdated > cloudUpdated) {
+          return null; 
+        }
+      }
+
+      return {
+        ...rest,
+        uuid: id, 
+        syncStatus: 'synced',
+      };
+    }).filter(Boolean); // Remove nulls
+
+    if (table === 'settings') {
+      await db.settings.bulkPut(toPut);
+    } else {
+      if (toPut.length > 0) {
+        await db.table(table).bulkPut(toPut);
+      }
+    }
+  }
+
   setLastSync(now);
 }
 
@@ -36996,34 +37154,39 @@ export async function syncAll() {
   if (!session) return;
 
   const lastSync = getLastSync();
-  
+
   if (!lastSync) {
-    const { count, error } = await supabase.from('transactions').select('*', { count: 'exact', head: true }).eq('user_id', session.user.id);
-    
+    const { count, error } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', session.user.id);
+
     if (!error && count === 0) {
-      // Cloud empty, push local up
       await db.transactions.toCollection().modify({ syncStatus: 'pending' });
       await db.settings.toCollection().modify({ syncStatus: 'pending' });
       await db.loans.toCollection().modify({ syncStatus: 'pending' });
       await db.bucket_map.toCollection().modify({ syncStatus: 'pending' });
       await pushChanges();
       setLastSync(new Date().toISOString());
-      return;
     } else {
-      // Cloud has data, pull down and WIPE local
       await pullChanges(true);
-      return;
     }
+    return;
   }
 
-  await pushChanges();
-  await pullChanges(false);
+  // PUSH FIRST. If push fails, abort pull to prevent duplicates.
+  const pushSuccess = await pushChanges();
+  if (pushSuccess) {
+    await pullChanges(false);
+  } else {
+    console.warn('Push failed. Aborting pull to prevent data loss/duplication.');
+  }
 }
 
 ================================================================================
 FILE: src/main.jsx
 PATH: /home/iburu/finance-erp/src/main.jsx
-SIZE: 659 bytes    LINES: 24
+SIZE: 1296 bytes    LINES: 39
 ================================================================================
 
 import React from 'react'
@@ -37043,6 +37206,21 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     navigator.serviceWorker.register('/sw.js').then(
       (registration) => {
         console.log('SW registered: ', registration);
+        
+        // Force a check for a new service worker on every load
+        registration.update();
+
+        // If a new service worker is found, activate it and reload the page once
+        registration.onupdatefound = () => {
+          const installingWorker = registration.installing;
+          if (installingWorker == null) return;
+          installingWorker.onstatechange = () => {
+            if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              console.log('New content is available; please refresh.');
+              window.location.reload();
+            }
+          };
+        };
       },
       (registrationError) => {
         console.log('SW registration failed: ', registrationError);
@@ -37054,12 +37232,12 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 ================================================================================
 FILE: src/store/useStore.js
 PATH: /home/iburu/finance-erp/src/store/useStore.js
-SIZE: 16774 bytes    LINES: 517
+SIZE: 18042 bytes    LINES: 575
 ================================================================================
 
 import { create } from 'zustand';
 import { db } from '../db/database';
-import { v4 as uuidv4 } from 'uuid'; // <-- ADDED IMPORT
+import { v4 as uuidv4 } from 'uuid';
 
 export const useStore = create((set, get) => ({
   transactions: [],
@@ -37071,10 +37249,11 @@ export const useStore = create((set, get) => ({
 
   loadData: async () => {
     set({ isLoading: true });
-    const transactions = await db.transactions.toArray();
-    const settingsArray = await db.settings.toArray();
-    const loans = await db.loans.toArray();
-    const bucketMap = await db.bucket_map.toArray();
+    // Filter out deleted rows, but allow rows where 'deleted' is undefined (legacy data)
+    const transactions = await db.transactions.filter(t => t.deleted !== true).toArray();
+    const settingsArray = await db.settings.filter(s => s.deleted !== true).toArray();
+    const loans = await db.loans.filter(l => l.deleted !== true).toArray();
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
     const zakatLog = await db.zakat_log.toArray();
 
     const settings = settingsArray.reduce((acc, item) => {
@@ -37086,16 +37265,18 @@ export const useStore = create((set, get) => ({
   },
 
   updateSetting: async (key, value) => {
-    // Settings use the key as the primary identifier, no uuid needed
-    await db.settings.put({ 
-      key, 
-      value, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString(), 
-      deleted: false 
+    const { settings } = get();
+    if (JSON.stringify(settings[key]) === JSON.stringify(value)) return;
+
+    await db.settings.put({
+      key,
+      value,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
+      deleted: false,
     });
     set((state) => ({
-      settings: { ...state.settings, [key]: value }
+      settings: { ...state.settings, [key]: value },
     }));
   },
 
@@ -37115,29 +37296,31 @@ export const useStore = create((set, get) => ({
     );
 
     if (existing) {
-      await db.bucket_map.update(existing.id, { 
+      await db.bucket_map.update(existing.id, {
         bucket: newBucket,
         syncStatus: 'pending',
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
       set((state) => ({
         bucketMap: state.bucketMap.map(r =>
-          r.id === existing.id ? { ...r, bucket: newBucket, syncStatus: 'pending', updated_at: new Date().toISOString() } : r
-        )
+          r.id === existing.id
+            ? { ...r, bucket: newBucket, syncStatus: 'pending', updated_at: new Date().toISOString() }
+            : r
+        ),
       }));
     } else {
-      const newRow = { 
-        category, 
-        subcategory, 
+      const newRow = {
+        category,
+        subcategory,
         bucket: newBucket,
-        uuid: uuidv4(), // <-- ADDED UUID
+        uuid: uuidv4(),
         syncStatus: 'pending',
         updated_at: new Date().toISOString(),
-        deleted: false
+        deleted: false,
       };
       const id = await db.bucket_map.add(newRow);
       set((state) => ({
-        bucketMap: [...state.bucketMap, { ...newRow, id }]
+        bucketMap: [...state.bucketMap, { ...newRow, id }],
       }));
     }
   },
@@ -37145,84 +37328,91 @@ export const useStore = create((set, get) => ({
   getSubcategoriesFor: (category) => {
     const { bucketMap } = get();
     return bucketMap
-      .filter(r => r.category === category && !r.deleted)
+      .filter(r => r.category === category && r.deleted !== true)
       .map(r => r.subcategory);
   },
 
   getCategories: () => {
     const { bucketMap } = get();
-    return [...new Set(bucketMap.filter(r => !r.deleted).map(r => r.category))];
+    return [...new Set(bucketMap.filter(r => r.deleted !== true).map(r => r.category))];
   },
 
   // ============ LOANS ============
   addLoan: async (loanData) => {
+    const uuid = uuidv4();
     const newLoan = {
       ...loanData,
-      uuid: uuidv4(), // <-- ADDED UUID
+      uuid,
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
-      deleted: false
+      deleted: false,
     };
     const id = await db.loans.add(newLoan);
     set((state) => ({
-      loans: [...state.loans, { ...newLoan, id }]
+      loans: [...state.loans, { ...newLoan, id }],
     }));
+    return uuid;
   },
 
   updateLoan: async (id, updates) => {
     const updateData = {
       ...updates,
       syncStatus: 'pending',
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
     await db.loans.update(id, updateData);
     set((state) => ({
-      loans: state.loans.map(l => l.id === id ? { ...l, ...updateData } : l)
+      loans: state.loans.map(l => (l.id === id ? { ...l, ...updateData } : l)),
     }));
   },
 
   deleteLoan: async (id) => {
-    await db.loans.update(id, { 
-      deleted: true, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString() 
+    const target = get().loans.find(l => l.id === id);
+    const targetUuid = target?.uuid;
+
+    await db.loans.update(id, {
+      deleted: true,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
     });
-    
-    const linked = get().transactions.filter(t => t.loan_id === id);
+
+    const linked = get().transactions.filter(t => t.loan_uuid === targetUuid);
     for (const t of linked) {
-      await db.transactions.update(t.id, { 
-        loan_id: null,
+      await db.transactions.update(t.id, {
+        loan_uuid: null,
         syncStatus: 'pending',
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
       });
     }
-    
+
     set((state) => ({
       loans: state.loans.filter(l => l.id !== id),
       transactions: state.transactions.map(t =>
-        t.loan_id === id ? { ...t, loan_id: null, syncStatus: 'pending' } : t
-      )
+        t.loan_uuid === targetUuid ? { ...t, loan_uuid: null, syncStatus: 'pending' } : t
+      ),
     }));
   },
 
-  getLoanPaid: (loanId) => {
-    const { transactions } = get();
+  getLoanPaid: (loanIdentifier) => {
+    const { transactions, loans } = get();
+    const loan = loans.find(l => l.uuid === loanIdentifier || l.id === loanIdentifier);
+    if (!loan) return 0;
+
     return transactions
       .filter(t =>
-        t.loan_id === loanId &&
+        t.loan_uuid === loan.uuid &&
         t.type === 'Expense' &&
-        !t.is_historical &&
-        !t.deleted
+        t.deleted !== true
       )
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
   },
 
   getTotalDebtPayable: () => {
     const { loans } = get();
     let total = 0;
     for (const loan of loans) {
-      if (loan.deleted) continue;
-      const paid = get().getLoanPaid(loan.id);
+      if (loan.deleted === true) continue;
+      const paid = get().getLoanPaid(loan.uuid);
       total += Math.max(0, (loan.total_amount || 0) - paid);
     }
     return total;
@@ -37244,16 +37434,16 @@ export const useStore = create((set, get) => ({
       exchange_rate_at_time: currentRate,
       is_historical: false,
       date: transactionData.date || new Date().toISOString(),
-      uuid: uuidv4(), // <-- ADDED UUID
+      uuid: uuidv4(),
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
-      deleted: false
+      deleted: false,
     };
 
     const id = await db.transactions.add(newTransaction);
 
     set((state) => ({
-      transactions: [...state.transactions, { ...newTransaction, id }]
+      transactions: [...state.transactions, { ...newTransaction, id }],
     }));
   },
 
@@ -37262,73 +37452,95 @@ export const useStore = create((set, get) => ({
     const existing = get().transactions.find(t => t.id === id);
     if (!existing) return;
 
-    const currentRate = updates.exchange_rate_at_time || existing.exchange_rate_at_time || settings.current_usd_rate || 15.42;
+    const currentRate =
+      updates.exchange_rate_at_time ||
+      existing.exchange_rate_at_time ||
+      settings.current_usd_rate ||
+      15.42;
 
-    let amount_mvr = updates.amount_original !== undefined ? updates.amount_original : existing.amount_original;
+    let amount_mvr =
+      updates.amount_original !== undefined
+        ? updates.amount_original
+        : existing.amount_original;
     if ((updates.currency || existing.currency) === 'USD') {
       amount_mvr = amount_mvr * currentRate;
     }
 
-    const updated = { 
-      ...existing, 
-      ...updates, 
-      amount_mvr, 
+    const updated = {
+      ...existing,
+      ...updates,
+      amount_mvr,
       exchange_rate_at_time: currentRate,
       syncStatus: 'pending',
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
 
     await db.transactions.put(updated);
 
     set((state) => ({
-      transactions: state.transactions.map(t => t.id === id ? updated : t)
+      transactions: state.transactions.map(t => (t.id === id ? updated : t)),
     }));
   },
 
   deleteTransaction: async (id) => {
-    await db.transactions.update(id, { 
-      deleted: true, 
-      syncStatus: 'pending', 
-      updated_at: new Date().toISOString() 
+    await db.transactions.update(id, {
+      deleted: true,
+      syncStatus: 'pending',
+      updated_at: new Date().toISOString(),
     });
     set((state) => ({
-      transactions: state.transactions.filter(t => t.id !== id)
+      transactions: state.transactions.filter(t => t.id !== id),
     }));
   },
 
   // ============ CALCULATIONS ============
   getBucketBalances: (monthString) => {
     const { transactions, settings } = get();
-    const monthTransactions = transactions.filter(t => t.date.startsWith(monthString) && !t.is_historical && !t.deleted);
+    const monthTransactions = transactions.filter(
+      t => t.date.startsWith(monthString) && !t.is_historical && t.deleted !== true
+    );
 
     const totalIncome = monthTransactions
       .filter(t => t.type === 'Income')
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
-    const essentialAllocated = totalIncome * (settings.essential_pct / 100);
-    const discretionaryAllocated = totalIncome * (settings.discretionary_pct / 100);
-    const financialAllocated = totalIncome * (settings.financial_pct / 100);
-    const savingsAllocated = totalIncome * (settings.savings_pct / 100);
+    const ePct = Number(settings.essential_pct) || 40;
+    const dPct = Number(settings.discretionary_pct) || 10;
+    const fPct = Number(settings.financial_pct) || 15;
+    const sPct = Number(settings.savings_pct) || 35;
 
-    const essentialSpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Essential').reduce((sum, t) => sum + t.amount_mvr, 0);
-    const discretionarySpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Discretionary').reduce((sum, t) => sum + t.amount_mvr, 0);
-    const financialSpent = monthTransactions.filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory').reduce((sum, t) => sum + t.amount_mvr, 0);
+    const essentialAllocated = totalIncome * (ePct / 100);
+    const discretionaryAllocated = totalIncome * (dPct / 100);
+    const financialAllocated = totalIncome * (fPct / 100);
+    const savingsAllocated = totalIncome * (sPct / 100);
+
+    const essentialSpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Essential')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
+    const discretionarySpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Discretionary')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
+    const financialSpent = monthTransactions
+      .filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory')
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
     return {
       Essential: { allocated: essentialAllocated, spent: essentialSpent, remaining: essentialAllocated - essentialSpent },
       Discretionary: { allocated: discretionaryAllocated, spent: discretionarySpent, remaining: discretionaryAllocated - discretionarySpent },
       Financial: { allocated: financialAllocated, spent: financialSpent, remaining: financialAllocated - financialSpent },
-      Savings: { allocated: savingsAllocated, spent: 0, remaining: savingsAllocated }
+      Savings: { allocated: savingsAllocated, spent: 0, remaining: savingsAllocated },
     };
   },
 
   getCategoryTotals: (monthString, includeHistorical = false) => {
     const { transactions } = get();
-    const monthExpenses = transactions.filter(t =>
-      t.date.startsWith(monthString) &&
-      t.type === 'Expense' &&
-      !t.deleted &&
-      (includeHistorical || !t.is_historical)
+    const monthExpenses = transactions.filter(
+      t =>
+        t.date.startsWith(monthString) &&
+        t.type === 'Expense' &&
+        t.deleted !== true &&
+        (includeHistorical || !t.is_historical) &&
+        Number.isFinite(t.amount_mvr)
     );
 
     const byCategory = {};
@@ -37353,8 +37565,7 @@ export const useStore = create((set, get) => ({
       .map(c => ({
         category: c.category,
         amount: c.amount,
-        subcategories: Object.values(c.subcategories)
-          .sort((a, b) => b.amount - a.amount),
+        subcategories: Object.values(c.subcategories).sort((a, b) => b.amount - a.amount),
       }))
       .sort((a, b) => b.amount - a.amount);
 
@@ -37366,7 +37577,12 @@ export const useStore = create((set, get) => ({
   getMonthTransactions: (monthString, includeHistorical = false) => {
     const { transactions } = get();
     return transactions
-      .filter(t => t.date.startsWith(monthString) && !t.deleted && (includeHistorical || !t.is_historical))
+      .filter(
+        t =>
+          t.date.startsWith(monthString) &&
+          t.deleted !== true &&
+          (includeHistorical || !t.is_historical)
+      )
       .sort((a, b) => new Date(b.date) - new Date(a.date));
   },
 
@@ -37375,26 +37591,31 @@ export const useStore = create((set, get) => ({
     const { transactions, settings } = get();
 
     const zakatPaidThisMonth = transactions
-      .filter(t =>
-        t.type === 'Expense' &&
-        t.category === 'Personal' &&
-        t.subcategory === 'Zakat' &&
-        t.date.startsWith(monthString) &&
-        !t.is_historical &&
-        !t.deleted
+      .filter(
+        t =>
+          t.type === 'Expense' &&
+          t.category === 'Personal' &&
+          t.subcategory === 'Zakat' &&
+          t.date.startsWith(monthString) &&
+          !t.is_historical &&
+          t.deleted !== true
       )
-      .reduce((sum, t) => sum + t.amount_mvr, 0);
+      .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
     let bankBalance;
-    if (settings.bank_balance_override !== undefined && settings.bank_balance_override !== null && settings.bank_balance_override !== '') {
-      bankBalance = parseFloat(settings.bank_balance_override);
+    if (
+      settings.bank_balance_override !== undefined &&
+      settings.bank_balance_override !== null &&
+      settings.bank_balance_override !== ''
+    ) {
+      bankBalance = parseFloat(settings.bank_balance_override) || 0;
     } else {
       const totalIncome = transactions
-        .filter(t => t.type === 'Income' && !t.is_historical && !t.deleted)
-        .reduce((sum, t) => sum + t.amount_mvr, 0);
+        .filter(t => t.type === 'Income' && !t.is_historical && t.deleted !== true)
+        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       const totalExpenses = transactions
-        .filter(t => t.type === 'Expense' && !t.is_historical && !t.deleted)
-        .reduce((sum, t) => sum + t.amount_mvr, 0);
+        .filter(t => t.type === 'Expense' && !t.is_historical && t.deleted !== true)
+        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
       bankBalance = totalIncome - totalExpenses;
     }
 
@@ -37407,7 +37628,8 @@ export const useStore = create((set, get) => ({
     const prevYearBalances = settings.prev_year_balances || {};
     const lastYearBalance = parseFloat(prevYearBalances[monthKey]) || 0;
 
-    const eligible = bankBalanceBeforeZakat > lastYearBalance || bankBalanceBeforeZakat > nisab;
+    const eligible =
+      bankBalanceBeforeZakat > lastYearBalance || bankBalanceBeforeZakat > nisab;
 
     const zakatableAmount = bankBalanceBeforeZakat - debtPayable + debtReceivable;
     const baseZakat = eligible && zakatableAmount > 0 ? zakatableAmount * 0.025 : 0;
@@ -37427,18 +37649,13 @@ export const useStore = create((set, get) => ({
       zakatPaidThisMonth,
       zakatDue,
       eligible,
-      fullyPaid
+      fullyPaid,
     };
   },
 
   // ============ RANGE + YEARLY ============
   getTransactionsInRange: (fromISO, toISO, opts = {}) => {
-    const {
-      includeHistorical = true,
-      type = 'All',
-      category = null,
-    } = opts;
-
+    const { includeHistorical = true, type = 'All', category = null } = opts;
     const { transactions } = get();
 
     let from = null;
@@ -37457,7 +37674,7 @@ export const useStore = create((set, get) => ({
 
     return transactions
       .filter(t => {
-        if (t.deleted) return false;
+        if (t.deleted === true) return false;
         if (!includeHistorical && t.is_historical) return false;
         if (type !== 'All' && t.type !== type) return false;
         if (category && t.category !== category) return false;
@@ -37476,12 +37693,15 @@ export const useStore = create((set, get) => ({
 
       rows.forEach(t => {
         if (t.type !== typeFilter) return;
+        if (!Number.isFinite(t.amount_mvr)) return;
 
         const cat = t.category || '(Uncategorized)';
         const sub = t.subcategory || '(No subcategory)';
 
         if (!map[cat]) map[cat] = { category: cat, total: 0, subcategories: {} };
-        if (!map[cat].subcategories[sub]) map[cat].subcategories[sub] = { subcategory: sub, total: 0, count: 0 };
+        if (!map[cat].subcategories[sub]) {
+          map[cat].subcategories[sub] = { subcategory: sub, total: 0, count: 0 };
+        }
 
         map[cat].total += t.amount_mvr;
         map[cat].subcategories[sub].total += t.amount_mvr;
@@ -37509,7 +37729,9 @@ export const useStore = create((set, get) => ({
   getYearlySummary: (type = 'Expense') => {
     const { transactions } = get();
 
-    const txFiltered = transactions.filter(t => t.type === type && !t.deleted);
+    const txFiltered = transactions.filter(
+      t => t.type === type && t.deleted !== true && Number.isFinite(t.amount_mvr)
+    );
 
     const yearSet = new Set();
     txFiltered.forEach(t => {
@@ -37526,17 +37748,21 @@ export const useStore = create((set, get) => ({
       const cat = t.category || '(Uncategorized)';
       if (!catMap[cat]) {
         catMap[cat] = { category: cat, byYear: {} };
-        years.forEach(yy => { catMap[cat].byYear[yy] = 0; });
+        years.forEach(yy => {
+          catMap[cat].byYear[yy] = 0;
+        });
       }
       catMap[cat].byYear[y] = (catMap[cat].byYear[y] || 0) + t.amount_mvr;
     });
 
-    const rows = Object.values(catMap).map(r => {
-      const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
-      const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
-      const avg = activeYears.length > 0 ? total / activeYears.length : 0;
-      return { ...r, total, avg };
-    }).sort((a, b) => b.total - a.total);
+    const rows = Object.values(catMap)
+      .map(r => {
+        const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
+        const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
+        const avg = activeYears.length > 0 ? total / activeYears.length : 0;
+        return { ...r, total, avg };
+      })
+      .sort((a, b) => b.total - a.total);
 
     const grandTotalByYear = {};
     years.forEach(y => {
@@ -37550,8 +37776,14 @@ export const useStore = create((set, get) => ({
 
   getSubcategoryYearlySummary: (targetCategory, years, type = 'Expense') => {
     const { transactions } = get();
-    
-    const catTx = transactions.filter(t => t.type === type && t.category === targetCategory && !t.deleted);
+
+    const catTx = transactions.filter(
+      t =>
+        t.type === type &&
+        t.category === targetCategory &&
+        t.deleted !== true &&
+        Number.isFinite(t.amount_mvr)
+    );
 
     const subMap = {};
     catTx.forEach(t => {
@@ -37561,18 +37793,22 @@ export const useStore = create((set, get) => ({
       const sub = t.subcategory || '(No subcategory)';
       if (!subMap[sub]) {
         subMap[sub] = { subcategory: sub, byYear: {} };
-        years.forEach(yy => { subMap[sub].byYear[yy] = 0; });
+        years.forEach(yy => {
+          subMap[sub].byYear[yy] = 0;
+        });
       }
       subMap[sub].byYear[y] = (subMap[sub].byYear[y] || 0) + t.amount_mvr;
     });
 
-    return Object.values(subMap).map(r => {
-      const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
-      const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
-      const avg = activeYears.length > 0 ? total / activeYears.length : 0;
-      return { ...r, total, avg };
-    }).sort((a, b) => b.total - a.total);
-  }
+    return Object.values(subMap)
+      .map(r => {
+        const total = years.reduce((sum, y) => sum + (r.byYear[y] || 0), 0);
+        const activeYears = years.filter(y => (r.byYear[y] || 0) > 0);
+        const avg = activeYears.length > 0 ? total / activeYears.length : 0;
+        return { ...r, total, avg };
+      })
+      .sort((a, b) => b.total - a.total);
+  },
 }));
 
 ================================================================================
