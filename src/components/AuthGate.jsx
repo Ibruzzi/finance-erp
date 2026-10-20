@@ -1,8 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
+import { liveQuery } from 'dexie';
 import { supabase } from '../lib/supabaseClient';
 import { syncAll } from '../lib/sync';
+import { db } from '../db/database';
 import { useStore } from '../store/useStore';
 import { Loader2, Mail, AlertCircle } from 'lucide-react';
+
+// How long to wait after your last change before uploading it.
+const PUSH_DELAY_MS = 3000;
+// Coming back to the app after at least this long triggers a quiet refresh.
+const RETURN_REFRESH_AFTER_MS = 15000;
+// While the app is open and visible, check the cloud this often.
+const POLL_INTERVAL_MS = 5 * 60 * 1000;
+
+const PENDING_TABLES = ['transactions', 'settings', 'loans', 'bucket_map'];
 
 export function AuthGate({ children }) {
   const [session, setSession] = useState(null);
@@ -28,7 +39,11 @@ export function AuthGate({ children }) {
       }
     } catch (e) {
       console.error('Sync failed:', e);
-      setSyncError(e.message || String(e));
+      // Being offline is normal for a phone. Only show the red bar for real errors,
+      // or when the person asked for the sync themselves (blocking).
+      if (blocking || navigator.onLine) {
+        setSyncError(e.message || String(e));
+      }
     } finally {
       if (blocking) setLoading(false);
     }
@@ -71,6 +86,69 @@ export function AuthGate({ children }) {
     return () => subscription.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ---------- Automatic syncing (only while signed in) ----------
+  const signedIn = !!session;
+
+  useEffect(() => {
+    if (!signedIn) return;
+
+    let pushTimer = null;
+    let hiddenAt = null;
+
+    const quietSync = () => {
+      if (!navigator.onLine) return;
+      triggerSync(false);
+    };
+
+    // 1. Upload shortly after you save/edit anything.
+    //    liveQuery re-runs whenever the local database changes. We count rows
+    //    still marked "pending" (not yet uploaded). If any exist, wait a few
+    //    seconds (so several quick edits go up together) and then sync.
+    const subscription = liveQuery(async () => {
+      let total = 0;
+      for (const t of PENDING_TABLES) {
+        total += await db.table(t).where('syncStatus').equals('pending').count();
+      }
+      return total;
+    }).subscribe({
+      next: (pendingCount) => {
+        clearTimeout(pushTimer);
+        if (pendingCount > 0) {
+          pushTimer = setTimeout(quietSync, PUSH_DELAY_MS);
+        }
+      },
+      error: (err) => console.error('Pending watcher error:', err),
+    });
+
+    // 2. Refresh when you come back to the app after a while.
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now();
+      } else if (hiddenAt && Date.now() - hiddenAt > RETURN_REFRESH_AFTER_MS) {
+        hiddenAt = null;
+        quietSync();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // 3. Sync when the internet comes back.
+    window.addEventListener('online', quietSync);
+
+    // 4. Check the cloud every few minutes while the app is open and visible.
+    const poll = setInterval(() => {
+      if (document.visibilityState === 'visible') quietSync();
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      clearTimeout(pushTimer);
+      subscription.unsubscribe();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', quietSync);
+      clearInterval(poll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
