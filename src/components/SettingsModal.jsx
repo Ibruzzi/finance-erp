@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Search } from 'lucide-react';
+import { X, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { BucketDropdown } from './BucketDropdown';
 import { ImportModal } from './ImportModal';
 
@@ -21,9 +21,12 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
 
   const [zakatInputs, setZakatInputs] = useState({
     debt_receivable: settings.debt_receivable || 0,
-    bank_balance_override: settings.bank_balance_override || '',
+    month_balances: settings.month_balances || {},
     prev_year_balances: settings.prev_year_balances || {},
   });
+
+  // Which year's month-end balances are being edited on the Zakat tab.
+  const [balanceYear, setBalanceYear] = useState(new Date().getFullYear());
 
   const handleLocalChange = (key, value) => setLocalRates({ ...localRates, [key]: value });
   const handleZakatInputChange = (key, value) => setZakatInputs({ ...zakatInputs, [key]: value });
@@ -33,6 +36,14 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
     setZakatInputs({
       ...zakatInputs,
       prev_year_balances: { ...zakatInputs.prev_year_balances, [key]: value }
+    });
+  };
+
+  const handleMonthBalanceChange = (monthIdx, value) => {
+    const key = `${balanceYear}-${String(monthIdx + 1).padStart(2, '0')}`;
+    setZakatInputs({
+      ...zakatInputs,
+      month_balances: { ...zakatInputs.month_balances, [key]: value }
     });
   };
 
@@ -48,7 +59,14 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
 
   const saveZakatInputs = async () => {
     await updateSetting('debt_receivable', parseFloat(zakatInputs.debt_receivable) || 0);
-    await updateSetting('bank_balance_override', zakatInputs.bank_balance_override);
+    // Drop empty boxes so a blank month means "not entered", not zero.
+    const cleanedBalances = {};
+    Object.entries(zakatInputs.month_balances).forEach(([k, v]) => {
+      if (v !== '' && v !== null && v !== undefined && !Number.isNaN(parseFloat(v))) {
+        cleanedBalances[k] = parseFloat(v);
+      }
+    });
+    await updateSetting('month_balances', cleanedBalances);
     await updateSetting('prev_year_balances', zakatInputs.prev_year_balances);
     alert('Zakat inputs saved!');
   };
@@ -164,14 +182,34 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
                 <input type="number" step="0.01" value={zakatInputs.debt_receivable} onChange={(e) => handleZakatInputChange('debt_receivable', e.target.value)} className="w-full p-2 bg-gray-50 rounded-lg border border-gray-200" placeholder="Money others owe you" />
               </div>
 
-              <div className="min-w-0">
-                <label className="text-xs font-semibold text-gray-500 mb-1 block">Bank Balance Override (MVR)</label>
-                <input type="number" step="0.01" value={zakatInputs.bank_balance_override} onChange={(e) => handleZakatInputChange('bank_balance_override', e.target.value)} className="w-full p-2 bg-gray-50 rounded-lg border border-gray-200" placeholder="Leave blank to auto-calculate" />
-                <div className="text-xs text-gray-400 mt-1">Auto-calc uses all-time income − expenses.</div>
+              <div>
+                <label className="text-xs font-semibold text-gray-500 mb-2 block">Bank Balance by Month (MVR)</label>
+                <div className="flex items-center justify-between bg-gray-50 rounded-lg border border-gray-200 mb-3">
+                  <button type="button" onClick={() => setBalanceYear(balanceYear - 1)} className="p-2 text-gray-500 hover:text-gray-800">
+                    <ChevronLeft size={18} />
+                  </button>
+                  <span className="text-sm font-bold text-gray-700">{balanceYear}</span>
+                  <button type="button" onClick={() => setBalanceYear(balanceYear + 1)} className="p-2 text-gray-500 hover:text-gray-800">
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {MONTH_NAMES.map((name, idx) => {
+                    const key = `${balanceYear}-${String(idx + 1).padStart(2, '0')}`;
+                    const val = zakatInputs.month_balances[key];
+                    return (
+                      <div key={key} className="min-w-0">
+                        <label className="text-[10px] text-gray-400">{name}</label>
+                        <input type="number" step="0.01" value={val ?? ''} onChange={(e) => handleMonthBalanceChange(idx, e.target.value)} className="w-full p-2 bg-gray-50 rounded-lg border border-gray-200 text-sm" placeholder="—" />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="text-xs text-gray-400 mt-2">Type your actual bank balance for each month, as in your Excel sheet. A month left blank shows no zakat figure.</div>
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-gray-500 mb-2 block">Previous Year Monthly Balances (MVR)</label>
+                <label className="text-xs font-semibold text-gray-500 mb-2 block">Previous Year Monthly Balances — 2025 (MVR)</label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {MONTH_NAMES.map((name, idx) => {
                     const key = String(idx + 1).padStart(2, '0');
@@ -183,7 +221,7 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
                     );
                   })}
                 </div>
-                <div className="text-xs text-gray-400 mt-2">Compare current month against the same month last year.</div>
+                <div className="text-xs text-gray-400 mt-2">Used for "same month last year" when viewing 2026. For later years, the balances you enter above are used automatically.</div>
               </div>
 
               <button onClick={saveZakatInputs} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition">Save Zakat Inputs</button>

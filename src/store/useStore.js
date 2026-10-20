@@ -2,6 +2,10 @@ import { create } from 'zustand';
 import { db } from '../db/database';
 import { v4 as uuidv4 } from 'uuid';
 
+// The year your saved "Previous Year Monthly Balances" grid belongs to.
+// (Entered in Oct 2026 as last year's month-end balances, so 2025.)
+const PREV_BALANCES_YEAR = 2025;
+
 export const useStore = create((set, get) => ({
   transactions: [],
   settings: {},
@@ -353,6 +357,8 @@ export const useStore = create((set, get) => ({
   // ============ ZAKAT LOGIC ============
   calculateZakat: (monthString) => {
     const { transactions, settings } = get();
+    const [yearStr, monthKey] = monthString.split('-');
+    const year = Number(yearStr);
 
     const zakatPaidThisMonth = transactions
       .filter(
@@ -366,36 +372,35 @@ export const useStore = create((set, get) => ({
       )
       .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
 
-    let bankBalance;
-    if (
-      settings.bank_balance_override !== undefined &&
-      settings.bank_balance_override !== null &&
-      settings.bank_balance_override !== ''
-    ) {
-      bankBalance = parseFloat(settings.bank_balance_override) || 0;
-    } else {
-      const totalIncome = transactions
-        .filter(t => t.type === 'Income' && !t.is_historical && t.deleted !== true)
-        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
-      const totalExpenses = transactions
-        .filter(t => t.type === 'Expense' && !t.is_historical && t.deleted !== true)
-        .reduce((sum, t) => sum + (t.amount_mvr || 0), 0);
-      bankBalance = totalIncome - totalExpenses;
-    }
+    // Turns a stored value into a number, or null if nothing valid was entered.
+    const readBalance = (v) => {
+      if (v === undefined || v === null || v === '') return null;
+      const n = parseFloat(v);
+      return Number.isNaN(n) ? null : n;
+    };
 
-    const bankBalanceBeforeZakat = bankBalance + zakatPaidThisMonth;
+    // Bank balance for THIS month, typed in by hand (like cell B15 in the Excel sheet).
+    const monthBalances = settings.month_balances || {};
+    const enteredBalance = readBalance(monthBalances[monthString]);
+    const noBalance = enteredBalance === null;
+    const bankBalance = noBalance ? 0 : enteredBalance;
+
     const debtPayable = get().getTotalDebtPayable();
     const debtReceivable = parseFloat(settings.debt_receivable) || 0;
     const nisab = parseFloat(settings.nisab_threshold) || 10000;
 
-    const monthKey = monthString.slice(5, 7);
+    // Same month last year: prefer a balance entered for that exact year,
+    // otherwise use the saved "previous year" grid (only valid for its own year).
     const prevYearBalances = settings.prev_year_balances || {};
-    const lastYearBalance = parseFloat(prevYearBalances[monthKey]) || 0;
+    const lastYearEntered = readBalance(monthBalances[`${year - 1}-${monthKey}`]);
+    const lastYearSaved =
+      year - 1 === PREV_BALANCES_YEAR ? readBalance(prevYearBalances[monthKey]) : null;
+    const lastYearBalance = lastYearEntered ?? lastYearSaved ?? 0;
 
-    const eligible =
-      bankBalanceBeforeZakat > lastYearBalance || bankBalanceBeforeZakat > nisab;
+    // Matches the Excel rule: eligible if balance > last year's, or balance > nisab.
+    const eligible = !noBalance && (bankBalance > lastYearBalance || bankBalance > nisab);
 
-    const zakatableAmount = bankBalanceBeforeZakat - debtPayable + debtReceivable;
+    const zakatableAmount = bankBalance - debtPayable + debtReceivable;
     const baseZakat = eligible && zakatableAmount > 0 ? zakatableAmount * 0.025 : 0;
 
     const zakatDue = Math.max(0, baseZakat - zakatPaidThisMonth);
@@ -403,7 +408,8 @@ export const useStore = create((set, get) => ({
 
     return {
       bankBalance,
-      bankBalanceBeforeZakat,
+      bankBalanceBeforeZakat: bankBalance,
+      noBalance,
       debtPayable,
       debtReceivable,
       nisab,

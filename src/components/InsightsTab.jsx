@@ -5,6 +5,20 @@ import { formatMoney } from '../utils/format';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+// Should the "Budget Pulse" card count historical (imported) rows?
+// false = same rule as the rest of the app: historical rows never touch live bucket math.
+// Set to true if you want Budget Pulse to also work for past months.
+const BUDGET_PULSE_INCLUDES_HISTORICAL = false;
+
+// The 2018-2022 rows are whole-year lumps (notes like "2018 aggregates") parked on
+// one date. They can't be split into months, so monthly insights skip them.
+// They still count in Yearly Summary.
+function isYearlyLump(t) {
+  return typeof t.notes === 'string' && /aggregates?\s*$/i.test(t.notes.trim());
+}
+
+const amt = (t) => Number(t.amount_mvr) || 0;
+
 function shiftMonth(monthString, delta) {
   const [y, m] = monthString.split('-').map(Number);
   const d = new Date(y, m - 1 + delta, 1);
@@ -85,9 +99,16 @@ function SectionCard({ title, icon: Icon, children, tone = 'default' }) {
 export function InsightsTab({ selectedMonth }) {
   const { transactions, settings, calculateZakat } = useStore();
 
-  const liveTx = useMemo(
-    () => transactions.filter(t => !t.is_historical),
+  // Everything that can be placed in a specific month: live + historical (monthly detail).
+  const monthlyTx = useMemo(
+    () => transactions.filter(t => t.deleted !== true && !isYearlyLump(t)),
     [transactions]
+  );
+
+  // What Budget Pulse is allowed to see.
+  const budgetTx = useMemo(
+    () => (BUDGET_PULSE_INCLUDES_HISTORICAL ? monthlyTx : monthlyTx.filter(t => !t.is_historical)),
+    [monthlyTx]
   );
 
   const thisMonth = selectedMonth;
@@ -96,45 +117,45 @@ export function InsightsTab({ selectedMonth }) {
 
   const monthAgg = useMemo(() => {
     const build = (monthStr) => {
-      const rows = liveTx.filter(t => t.date.startsWith(monthStr));
+      const rows = monthlyTx.filter(t => t.date.startsWith(monthStr));
       const income = rows
         .filter(t => t.type === 'Income')
-        .reduce((s, t) => s + t.amount_mvr, 0);
+        .reduce((s, t) => s + amt(t), 0);
       const expense = rows
         .filter(t => t.type === 'Expense')
-        .reduce((s, t) => s + t.amount_mvr, 0);
+        .reduce((s, t) => s + amt(t), 0);
       return { income, expense, net: income - expense, count: rows.length };
     };
     return {
       this: build(thisMonth),
       last: build(lastMonth),
     };
-  }, [liveTx, thisMonth, lastMonth]);
+  }, [monthlyTx, thisMonth, lastMonth]);
 
   const topSubs = useMemo(() => {
     const map = {};
-    liveTx
+    monthlyTx
       .filter(t => t.date.startsWith(thisMonth) && t.type === 'Expense')
       .forEach(t => {
         const key = `${t.category} › ${t.subcategory || '(none)'}`;
         if (!map[key]) map[key] = { key, category: t.category, subcategory: t.subcategory || '(none)', total: 0, count: 0 };
-        map[key].total += t.amount_mvr;
+        map[key].total += amt(t);
         map[key].count += 1;
       });
     const arr = Object.values(map).sort((a, b) => b.total - a.total).slice(0, 5);
     const grand = arr.reduce((s, r) => s + r.total, 0);
     return { rows: arr, grand };
-  }, [liveTx, thisMonth]);
+  }, [monthlyTx, thisMonth]);
 
   const trend = useMemo(() => {
     const months = [threeMonthsAgo, lastMonth, thisMonth];
     return months.map(m => {
-      const rows = liveTx.filter(t => t.date.startsWith(m));
-      const income = rows.filter(t => t.type === 'Income').reduce((s, t) => s + t.amount_mvr, 0);
-      const expense = rows.filter(t => t.type === 'Expense').reduce((s, t) => s + t.amount_mvr, 0);
+      const rows = monthlyTx.filter(t => t.date.startsWith(m));
+      const income = rows.filter(t => t.type === 'Income').reduce((s, t) => s + amt(t), 0);
+      const expense = rows.filter(t => t.type === 'Expense').reduce((s, t) => s + amt(t), 0);
       return { month: m, income, expense };
     });
-  }, [liveTx, threeMonthsAgo, lastMonth, thisMonth]);
+  }, [monthlyTx, threeMonthsAgo, lastMonth, thisMonth]);
 
   const trendMax = Math.max(
     1,
@@ -159,8 +180,8 @@ export function InsightsTab({ selectedMonth }) {
   }, [thisMonth, calculateZakat]);
 
   const bucketPulse = useMemo(() => {
-    const rows = liveTx.filter(t => t.date.startsWith(thisMonth) && !t.is_historical);
-    const income = rows.filter(t => t.type === 'Income').reduce((s, t) => s + t.amount_mvr, 0);
+    const rows = budgetTx.filter(t => t.date.startsWith(thisMonth));
+    const income = rows.filter(t => t.type === 'Income').reduce((s, t) => s + amt(t), 0);
 
     const alloc = {
       Essential: income * ((settings.essential_pct || 0) / 100),
@@ -169,9 +190,9 @@ export function InsightsTab({ selectedMonth }) {
       Savings: income * ((settings.savings_pct || 0) / 100),
     };
     const spent = {
-      Essential: rows.filter(t => t.type === 'Expense' && t.bucket === 'Essential').reduce((s, t) => s + t.amount_mvr, 0),
-      Discretionary: rows.filter(t => t.type === 'Expense' && t.bucket === 'Discretionary').reduce((s, t) => s + t.amount_mvr, 0),
-      Financial: rows.filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory').reduce((s, t) => s + t.amount_mvr, 0),
+      Essential: rows.filter(t => t.type === 'Expense' && t.bucket === 'Essential').reduce((s, t) => s + amt(t), 0),
+      Discretionary: rows.filter(t => t.type === 'Expense' && t.bucket === 'Discretionary').reduce((s, t) => s + amt(t), 0),
+      Financial: rows.filter(t => t.type === 'Expense' && t.bucket === 'Financial/Obligatory').reduce((s, t) => s + amt(t), 0),
       Savings: 0,
     };
     const build = (name) => {
@@ -181,15 +202,31 @@ export function InsightsTab({ selectedMonth }) {
       return { name, allocated: a, spent: sp, pct, over: sp > a && a > 0 };
     };
     return [build('Essential'), build('Discretionary'), build('Financial'), build('Savings')];
-  }, [liveTx, thisMonth, settings]);
+  }, [budgetTx, thisMonth, settings]);
+
+  const sourceCounts = useMemo(() => {
+    const rows = monthlyTx.filter(t => t.date.startsWith(thisMonth));
+    const historical = rows.filter(t => t.is_historical).length;
+    return { historical, live: rows.length - historical };
+  }, [monthlyTx, thisMonth]);
+
+  // Is the selected period one of the yearly-lump years (no monthly detail exists)?
+  const onlyYearlyLumps = useMemo(
+    () => transactions.some(
+      t => t.deleted !== true && isYearlyLump(t) &&
+        (t.date.startsWith(thisMonth.slice(0, 4)))
+    ),
+    [transactions, thisMonth]
+  );
 
   const hasAnyData = monthAgg.this.count > 0 || monthAgg.last.count > 0;
 
   if (!hasAnyData) {
     return (
       <div className="text-center p-10 text-gray-400 bg-white rounded-xl shadow-sm text-sm">
-        No live transaction data yet for {monthLabel(thisMonth)} or {monthLabel(lastMonth)}.
-        Add transactions or switch months to see insights.
+        {onlyYearlyLumps
+          ? `${thisMonth.slice(0, 4)} was recorded as yearly totals only, so there is no month-by-month detail to analyse. See the Yearly Summary instead.`
+          : `No transaction data for ${monthLabel(thisMonth)} or ${monthLabel(lastMonth)}. Add transactions or switch months to see insights.`}
       </div>
     );
   }
@@ -221,6 +258,11 @@ export function InsightsTab({ selectedMonth }) {
         <div className="text-[11px] text-gray-400 mt-2">
           This month: {monthAgg.this.count} txn • Last month: {monthAgg.last.count} txn
         </div>
+        {sourceCounts.historical > 0 && (
+          <div className="text-[11px] text-gray-400 mt-0.5">
+            This month includes {sourceCounts.historical} imported historical and {sourceCounts.live} live entries.
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard title={`Top Subcategories — ${monthLabel(thisMonth)}`} icon={Flame} tone="warning">
@@ -371,12 +413,15 @@ export function InsightsTab({ selectedMonth }) {
             );
           })}
         </div>
-        {monthAgg.this.income === 0 && (
+        {bucketPulse.every(b => b.allocated === 0) && (
           <div className="text-[11px] text-gray-400 mt-3 text-center">
-            No income logged this month — allocations show as RF 0.00.
+            {BUDGET_PULSE_INCLUDES_HISTORICAL
+              ? 'No income logged this month — allocations show as RF 0.00.'
+              : 'No live income logged this month — allocations show as RF 0.00. (Imported historical entries are not counted in budget math.)'}
           </div>
         )}
       </SectionCard>
     </div>
   );
 }
+

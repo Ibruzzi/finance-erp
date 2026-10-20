@@ -8,7 +8,7 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
   const monthName = MONTH_NAMES[parseInt(selectedMonth.slice(5, 7)) - 1];
   const year = selectedMonth.slice(0, 4);
 
-  const defaultExpanded = zakat.eligible && !zakat.fullyPaid;
+  const defaultExpanded = (zakat.eligible && !zakat.fullyPaid) || zakat.noBalance;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
   const stateClasses = !zakat.eligible 
@@ -17,7 +17,9 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
       ? 'bg-gradient-to-r from-green-600 to-green-500' 
       : 'bg-gradient-to-r from-orange-500 to-orange-400';
 
-  const headline = !zakat.eligible 
+  const headline = zakat.noBalance
+    ? 'No balance entered'
+    : !zakat.eligible 
     ? 'Ineligible' 
     : zakat.fullyPaid 
       ? `Paid ✓ (RF ${formatMoney(zakat.baseZakat)})` 
@@ -59,7 +61,11 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
 
       {isExpanded && (
         <div className="px-4 pb-4 text-xs opacity-90 space-y-0.5">
-          {!zakat.eligible ? (
+          {zakat.noBalance ? (
+            <div>
+              Enter your bank balance for {monthName} {year} in Settings → Zakat Inputs to see the zakat for this month.
+            </div>
+          ) : !zakat.eligible ? (
             <div>
               Bank before Zakat (RF {formatMoney(zakat.bankBalanceBeforeZakat)}) does not exceed Nisab (RF {formatMoney(zakat.nisab)}) or last year's {monthName} balance (RF {formatMoney(zakat.lastYearBalance)})
             </div>
