@@ -1,11 +1,19 @@
 import { useState } from 'react';
-import { X, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Search, ChevronLeft, ChevronRight, Trash2, Plus } from 'lucide-react';
 import { BucketDropdown } from './BucketDropdown';
+import { CustomSelect } from './CustomSelect';
+import { isProtectedCategory, isProtectedEntry } from '../store/useStore';
 import { ImportModal } from './ImportModal';
+import { downloadBackup } from '../utils/backup';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function SettingsModal({ onClose, settings, updateSetting, bucketMap, updateBucketFor, onDataChanged }) {
+const NEW_CATEGORY_OPTION = '+ New category…';
+
+export function SettingsModal({
+  onClose, settings, updateSetting, bucketMap, updateBucketFor, onDataChanged,
+  addCategoryEntry, removeCategoryEntry, removeWholeCategory
+}) {
   const [activeTab, setActiveTab] = useState('general');
   const [searchTerm, setSearchTerm] = useState('');
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -18,6 +26,69 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
     financial_pct: settings.financial_pct || 15,
     savings_pct: settings.savings_pct || 35,
   });
+
+  // Insights → Budget Pulse: should it also count imported historical entries?
+  const [budgetPulseHist, setBudgetPulseHist] = useState(settings.budget_pulse_include_historical === true);
+
+  const [backupMsg, setBackupMsg] = useState('');
+
+  // ----- Add / remove categories (Bucket Map tab) -----
+  const [addCategory, setAddCategory] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newSubcategory, setNewSubcategory] = useState('');
+  const [addBucket, setAddBucket] = useState('Discretionary');
+  const [catMessage, setCatMessage] = useState(null); // { ok, text }
+
+  const categoryNames = [...new Set(bucketMap.map(r => r.category))].sort((a, b) => a.localeCompare(b));
+  const effectiveCategory = addCategory === NEW_CATEGORY_OPTION ? newCategoryName.trim() : addCategory;
+
+  const handleAddEntry = async () => {
+    const result = await addCategoryEntry(effectiveCategory, newSubcategory, addBucket);
+    setCatMessage({ ok: result.ok, text: result.message });
+    if (result.ok) {
+      setNewSubcategory('');
+      if (addCategory === NEW_CATEGORY_OPTION) {
+        // Switch the picker to the category we just created.
+        setAddCategory(effectiveCategory);
+        setNewCategoryName('');
+      }
+    }
+  };
+
+  const handleRemoveEntry = async (category, subcategory) => {
+    const ok = window.confirm(
+      `Remove "${subcategory}" from ${category}?\n\n` +
+      'Your past transactions keep their category exactly as they are. ' +
+      'It will only stop appearing when you add NEW transactions.'
+    );
+    if (!ok) return;
+    const result = await removeCategoryEntry(category, subcategory);
+    setCatMessage({ ok: result.ok, text: result.message });
+  };
+
+  const handleRemoveCategory = async (category, count) => {
+    const ok = window.confirm(
+      `Remove the whole "${category}" category (${count} subcategories)?\n\n` +
+      'Your past transactions keep their category exactly as they are. ' +
+      'It will only stop appearing when you add NEW transactions.'
+    );
+    if (!ok) return;
+    const result = await removeWholeCategory(category);
+    setCatMessage({ ok: result.ok, text: result.message });
+  };
+
+  const handleBackup = async () => {
+    try {
+      const counts = await downloadBackup();
+      setBackupMsg(
+        `Backup saved: ${counts.transactions} transactions, ${counts.loans} loans, ` +
+        `${counts.bucket_map} bucket rules, ${counts.settings} settings. Check your Downloads folder.`
+      );
+    } catch (err) {
+      console.error('Backup failed:', err);
+      setBackupMsg('Backup failed: ' + (err.message || err));
+    }
+  };
 
   const [zakatInputs, setZakatInputs] = useState({
     debt_receivable: settings.debt_receivable || 0,
@@ -54,6 +125,7 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
     await updateSetting('discretionary_pct', parseFloat(localRates.discretionary_pct) || 10);
     await updateSetting('financial_pct', parseFloat(localRates.financial_pct) || 15);
     await updateSetting('savings_pct', parseFloat(localRates.savings_pct) || 35);
+    await updateSetting('budget_pulse_include_historical', budgetPulseHist);
     alert('General settings saved!');
   };
 
@@ -134,38 +206,159 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
                 </div>
               </div>
 
+              <label className="flex items-start gap-2 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={budgetPulseHist}
+                  onChange={(e) => setBudgetPulseHist(e.target.checked)}
+                  className="accent-blue-600 mt-0.5"
+                />
+                <span>
+                  Include imported historical entries in Insights → Budget Pulse
+                  <span className="block text-xs text-gray-400">Off by default. Turn on to see budget usage for past months.</span>
+                </span>
+              </label>
+
               <button onClick={saveGeneral} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition">Save General Settings</button>
+
+              <div className="border-t border-gray-100 pt-4">
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Backup</label>
+                <p className="text-xs text-gray-400 mb-2">
+                  Saves all your data to a file on this device. Do this now and then, and before anything risky.
+                </p>
+                <button onClick={handleBackup} className="w-full bg-gray-100 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-200 transition">
+                  Download Backup (.json)
+                </button>
+                {backupMsg && <div className="text-xs text-gray-600 mt-2">{backupMsg}</div>}
+              </div>
             </div>
           )}
 
           {activeTab === 'buckets' && (
             <div>
+              {/* ---------- Add a category / subcategory ---------- */}
+              <div className="bg-blue-50 rounded-lg p-3 mb-4 space-y-2">
+                <div className="text-xs font-semibold text-blue-700">Add a category or subcategory</div>
+
+                <CustomSelect
+                  value={addCategory}
+                  onChange={setAddCategory}
+                  options={[...categoryNames, NEW_CATEGORY_OPTION]}
+                  placeholder="Choose a category"
+                  required={false}
+                />
+
+                {addCategory === NEW_CATEGORY_OPTION && (
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="New category name"
+                    className="w-full p-2 bg-white rounded-lg border border-gray-200 text-sm"
+                  />
+                )}
+
+                <input
+                  type="text"
+                  value={newSubcategory}
+                  onChange={(e) => setNewSubcategory(e.target.value)}
+                  placeholder="Subcategory name"
+                  className="w-full p-2 bg-white rounded-lg border border-gray-200 text-sm"
+                />
+
+                {effectiveCategory === 'Income' ? (
+                  <div className="text-xs text-gray-500">Bucket: Income (set automatically)</div>
+                ) : (
+                  <div>
+                    <div className="text-[11px] text-gray-500 mb-1">Bucket for this subcategory</div>
+                    <BucketDropdown currentValue={addBucket} onSelect={setAddBucket} />
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleAddEntry}
+                  disabled={!effectiveCategory || !newSubcategory.trim()}
+                  className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 disabled:opacity-50"
+                >
+                  <Plus size={16} /> Add
+                </button>
+
+                {catMessage && (
+                  <div className={`text-xs ${catMessage.ok ? 'text-green-700' : 'text-red-600'}`}>
+                    {catMessage.text}
+                  </div>
+                )}
+              </div>
+
+              {/* ---------- Search ---------- */}
               <div className="relative mb-4">
                 <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search category or subcategory..." className="w-full p-3 pl-10 bg-gray-50 rounded-lg border border-gray-200" />
               </div>
 
-              <div className="space-y-2 max-h-96 overflow-y-auto">
+              {/* ---------- Grouped list ---------- */}
+              <div className="space-y-4 max-h-96 overflow-y-auto">
                 {filteredMap.length === 0 ? (
                   <div className="text-center p-4 text-gray-400 text-sm">No matches.</div>
                 ) : (
-                  filteredMap.map((row) => (
-                    <div key={row.id} className="flex flex-col gap-2 bg-gray-50 p-3 rounded-lg">
-                      <div className="min-w-0">
-                        <div className="text-xs text-gray-400">{row.category}</div>
-                        <div className="text-sm font-semibold text-gray-700 truncate">{row.subcategory}</div>
-                      </div>
-                      <BucketDropdown 
-                        currentValue={row.bucket}
-                        onSelect={(newBucket) => updateBucketFor(row.category, row.subcategory, newBucket)}
-                      />
-                    </div>
-                  ))
+                  [...new Set(filteredMap.map(r => r.category))]
+                    .sort((a, b) => a.localeCompare(b))
+                    .map(cat => {
+                      const rows = filteredMap.filter(r => r.category === cat);
+                      const totalInCategory = bucketMap.filter(r => r.category === cat).length;
+                      return (
+                        <div key={cat}>
+                          <div className="flex items-center justify-between mb-1 px-1">
+                            <div className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+                              {cat} <span className="font-normal text-gray-400">({totalInCategory})</span>
+                            </div>
+                            {!isProtectedCategory(cat) && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCategory(cat, totalInCategory)}
+                                className="text-gray-400 hover:text-red-600 p-1"
+                                title={`Remove the ${cat} category`}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            {rows.map((row) => (
+                              <div key={row.id} className="flex flex-col gap-2 bg-gray-50 p-3 rounded-lg">
+                                <div className="flex items-center justify-between gap-2 min-w-0">
+                                  <div className="text-sm font-semibold text-gray-700 truncate">{row.subcategory}</div>
+                                  {isProtectedEntry(row.category, row.subcategory) ? (
+                                    <span className="text-[10px] text-gray-400 flex-shrink-0">used by app</span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveEntry(row.category, row.subcategory)}
+                                      className="text-gray-400 hover:text-red-600 p-1 flex-shrink-0"
+                                      title={`Remove ${row.subcategory}`}
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                                <BucketDropdown
+                                  currentValue={row.bucket}
+                                  onSelect={(newBucket) => updateBucketFor(row.category, row.subcategory, newBucket)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })
                 )}
               </div>
 
               <p className="text-xs text-gray-400 mt-3 text-center">
-                Changes apply only to <strong>future</strong> transactions.
+                Bucket changes apply only to <strong>future</strong> transactions.
+                Removing a category never changes past transactions.
               </p>
             </div>
           )}

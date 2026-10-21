@@ -1,6 +1,19 @@
 import { create } from 'zustand';
-import { db } from '../db/database';
+import { db, stableUuid } from '../db/database';
 import { v4 as uuidv4 } from 'uuid';
+
+// Category entries the app's own logic depends on. They can be re-bucketed but not removed:
+//  - the whole "Income" category (the Income tab of Add Transaction needs it)
+//  - the whole "Personal" category (the default category)
+//  - Personal > Zakat       (used by the zakat card and "Mark Paid")
+//  - Personal > Loan Repayment (links repayments to loans)
+export function isProtectedCategory(category) {
+  return category === 'Income' || category === 'Personal';
+}
+export function isProtectedEntry(category, subcategory) {
+  if (category === 'Personal' && (subcategory === 'Zakat' || subcategory === 'Loan Repayment')) return true;
+  return false;
+}
 
 // The year your saved "Previous Year Monthly Balances" grid belongs to.
 // (Entered in Oct 2026 as last year's month-end balances, so 2025.)
@@ -36,9 +49,12 @@ export const useStore = create((set, get) => ({
     const { settings } = get();
     if (JSON.stringify(settings[key]) === JSON.stringify(value)) return;
 
+    // Keep the row's existing uuid (or make a stable one) so it never loses its cloud id.
+    const existingRow = await db.settings.get(key);
     await db.settings.put({
       key,
       value,
+      uuid: existingRow?.uuid || stableUuid('setting|' + key),
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
       deleted: false,
@@ -91,6 +107,107 @@ export const useStore = create((set, get) => ({
         bucketMap: [...state.bucketMap, { ...newRow, id }],
       }));
     }
+  },
+
+  // ---- Add / remove categories and subcategories ----
+  // Removing only hides an entry from the dropdowns for NEW transactions.
+  // Old transactions keep their own category, subcategory and bucket as plain text,
+  // so nothing about past data changes.
+  addCategoryEntry: async (categoryInput, subcategoryInput, bucket) => {
+    const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+    let category = clean(categoryInput);
+    const subcategory = clean(subcategoryInput);
+    if (!category || !subcategory) {
+      return { ok: false, message: 'Please enter both a category and a subcategory.' };
+    }
+
+    const allRows = await db.bucket_map.toArray();
+
+    // If the category already exists in a different capitalisation, reuse that spelling.
+    const sameCategory = allRows.find(
+      r => r.category.toLowerCase() === category.toLowerCase()
+    );
+    if (sameCategory) category = sameCategory.category;
+
+    const finalBucket = category === 'Income' ? 'Income' : (bucket || 'Discretionary');
+    const now = new Date().toISOString();
+
+    const match = allRows.find(
+      r =>
+        r.category === category &&
+        r.subcategory.toLowerCase() === subcategory.toLowerCase()
+    );
+
+    if (match && match.deleted !== true) {
+      return { ok: false, message: `"${match.subcategory}" already exists under ${category}.` };
+    }
+
+    if (match) {
+      // It was removed earlier: bring the same row back instead of making a second one.
+      await db.bucket_map.update(match.id, {
+        subcategory,
+        bucket: finalBucket,
+        deleted: false,
+        syncStatus: 'pending',
+        updated_at: now,
+      });
+    } else {
+      await db.bucket_map.add({
+        category,
+        subcategory,
+        bucket: finalBucket,
+        uuid: uuidv4(),
+        syncStatus: 'pending',
+        updated_at: now,
+        deleted: false,
+      });
+    }
+
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Added "${subcategory}" to ${category}.` };
+  },
+
+  removeCategoryEntry: async (category, subcategory) => {
+    if (category === 'Income') {
+      // Add Transaction needs at least one income subcategory to exist.
+      const incomeLeft = get().bucketMap.filter(r => r.category === 'Income').length;
+      if (incomeLeft <= 1) {
+        return { ok: false, message: 'Keep at least one Income subcategory so you can still record income.' };
+      }
+    }
+    if (isProtectedEntry(category, subcategory)) {
+      return { ok: false, message: `"${subcategory}" is used by zakat/loan features and can't be removed.` };
+    }
+    const now = new Date().toISOString();
+    const rows = await db.bucket_map
+      .filter(r => r.category === category && r.subcategory === subcategory && r.deleted !== true)
+      .toArray();
+    for (const r of rows) {
+      await db.bucket_map.update(r.id, { deleted: true, syncStatus: 'pending', updated_at: now });
+    }
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Removed "${subcategory}" from ${category}.` };
+  },
+
+  removeWholeCategory: async (category) => {
+    if (isProtectedCategory(category)) {
+      return { ok: false, message: `The "${category}" category is required by the app and can't be removed.` };
+    }
+    const rows = await db.bucket_map
+      .filter(r => r.category === category && r.deleted !== true)
+      .toArray();
+    if (rows.some(r => isProtectedEntry(r.category, r.subcategory))) {
+      return { ok: false, message: 'This category contains entries the app needs and can\'t be removed.' };
+    }
+    const now = new Date().toISOString();
+    for (const r of rows) {
+      await db.bucket_map.update(r.id, { deleted: true, syncStatus: 'pending', updated_at: now });
+    }
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Removed the "${category}" category (${rows.length} subcategories).` };
   },
 
   getSubcategoriesFor: (category) => {

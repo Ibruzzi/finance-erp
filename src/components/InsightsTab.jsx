@@ -5,11 +5,6 @@ import { formatMoney } from '../utils/format';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// Should the "Budget Pulse" card count historical (imported) rows?
-// false = same rule as the rest of the app: historical rows never touch live bucket math.
-// Set to true if you want Budget Pulse to also work for past months.
-const BUDGET_PULSE_INCLUDES_HISTORICAL = false;
-
 // The 2018-2022 rows are whole-year lumps (notes like "2018 aggregates") parked on
 // one date. They can't be split into months, so monthly insights skip them.
 // They still count in Yearly Summary.
@@ -105,10 +100,12 @@ export function InsightsTab({ selectedMonth }) {
     [transactions]
   );
 
-  // What Budget Pulse is allowed to see.
+  // What Budget Pulse is allowed to see. Controlled by Settings → General
+  // ("Include imported historical entries in Insights → Budget Pulse"). Off by default.
+  const budgetIncludesHistorical = settings.budget_pulse_include_historical === true;
   const budgetTx = useMemo(
-    () => (BUDGET_PULSE_INCLUDES_HISTORICAL ? monthlyTx : monthlyTx.filter(t => !t.is_historical)),
-    [monthlyTx]
+    () => (budgetIncludesHistorical ? monthlyTx : monthlyTx.filter(t => !t.is_historical)),
+    [monthlyTx, budgetIncludesHistorical]
   );
 
   const thisMonth = selectedMonth;
@@ -167,16 +164,18 @@ export function InsightsTab({ selectedMonth }) {
     let totalDue = 0;
     let totalPaid = 0;
     let eligibleMonths = 0;
+    let balancesEntered = 0;
     for (let i = 1; i <= 12; i++) {
       const m = `${year}-${String(i).padStart(2, '0')}`;
       const z = calculateZakat(m);
+      if (!z.noBalance) balancesEntered += 1;
       if (z.eligible) {
         eligibleMonths += 1;
         totalDue += z.baseZakat;
         totalPaid += z.zakatPaidThisMonth;
       }
     }
-    return { totalDue, totalPaid, outstanding: Math.max(0, totalDue - totalPaid), eligibleMonths };
+    return { totalDue, totalPaid, outstanding: Math.max(0, totalDue - totalPaid), eligibleMonths, balancesEntered };
   }, [thisMonth, calculateZakat]);
 
   const bucketPulse = useMemo(() => {
@@ -373,7 +372,9 @@ export function InsightsTab({ selectedMonth }) {
           </div>
         </div>
         <div className="text-[11px] text-gray-400 mt-3 text-center">
-          Eligible months this year: {zakatYTD.eligibleMonths} / 12
+          {zakatYTD.balancesEntered === 0
+            ? `No bank balances entered for ${thisMonth.slice(0, 4)} yet. Add them in Settings → Zakat Inputs.`
+            : `Balances entered: ${zakatYTD.balancesEntered} / 12 • Eligible months: ${zakatYTD.eligibleMonths}`}
         </div>
       </SectionCard>
 
@@ -415,7 +416,7 @@ export function InsightsTab({ selectedMonth }) {
         </div>
         {bucketPulse.every(b => b.allocated === 0) && (
           <div className="text-[11px] text-gray-400 mt-3 text-center">
-            {BUDGET_PULSE_INCLUDES_HISTORICAL
+            {budgetIncludesHistorical
               ? 'No income logged this month — allocations show as RF 0.00.'
               : 'No live income logged this month — allocations show as RF 0.00. (Imported historical entries are not counted in budget math.)'}
           </div>

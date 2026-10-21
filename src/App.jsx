@@ -5,6 +5,7 @@ import { Plus, CreditCard, Settings, RefreshCw } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 import { syncAll } from './lib/sync';
 import { AuthGate } from './components/AuthGate';
+import { SyncStatus } from './components/SyncStatus';
 
 import { MonthPicker } from './components/MonthPicker';
 import { AppTabs } from './components/AppTabs';
@@ -33,7 +34,7 @@ function MainApp() {
     loadData, isLoading, settings, getBucketBalances, getCategoryTotals,
     calculateZakat, addTransaction, updateTransaction, deleteTransaction,
     getMonthTransactions, bucketMap, getBucketFromMap, getSubcategoriesFor,
-    getCategories, updateSetting, loans, getLoanPaid, getTotalDebtPayable
+    getCategories, updateSetting, loans, getLoanPaid, getTotalDebtPayable, transactions
   } = useStore();
   
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -52,9 +53,16 @@ function MainApp() {
 
   const handleManualSync = async () => {
     setIsSyncing(true);
-    await syncAll();
-    await loadData();
-    setIsSyncing(false);
+    try {
+      await syncAll();
+      await loadData();
+    } catch (err) {
+      console.error('Manual sync failed:', err);
+      alert('Sync problem: ' + (err.message || err));
+    } finally {
+      // Always switch the spinner off, even if the sync failed.
+      setIsSyncing(false);
+    }
   };
 
   if (isLoading) return <div className="p-10 text-center text-gray-500">Loading Finance ERP...</div>;
@@ -65,6 +73,15 @@ function MainApp() {
   const monthTransactions = getMonthTransactions(selectedMonth, includeHistorical);
   const totalDebt = getTotalDebtPayable();
   const allCategories = getCategories();
+
+  // The Range report's category filter should also list categories that were removed
+  // from the Bucket Map but still exist on past transactions.
+  const rangeCategories = [
+    ...allCategories,
+    ...[...new Set(transactions.filter(t => t.deleted !== true).map(t => t.category).filter(Boolean))]
+      .filter(c => !allCategories.includes(c))
+      .sort((a, b) => a.localeCompare(b)),
+  ];
 
   const handleEdit = (t) => {
     setEditingTransaction(t);
@@ -77,6 +94,16 @@ function MainApp() {
     }
   };
 
+  // The payment must be dated INSIDE the month being viewed, because that is
+  // where the zakat calculation looks for it. For the current month that is
+  // right now; for any other month it is that month's last day.
+  const zakatPaymentDate = () => {
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    if (selectedMonth === currentMonth) return new Date().toISOString();
+    const [y, m] = selectedMonth.split('-').map(Number);
+    return new Date(Date.UTC(y, m, 0, 12, 0, 0)).toISOString();
+  };
+
   const handleMarkZakatPaid = async (amount) => {
     await addTransaction({
       type: 'Expense',
@@ -86,7 +113,7 @@ function MainApp() {
       currency: 'MVR',
       bucket: 'Financial/Obligatory',
       notes: `Zakat paid for ${selectedMonth}`,
-      date: new Date().toISOString()
+      date: zakatPaymentDate()
     });
     setIsZakatPaidOpen(false);
   };
@@ -127,6 +154,7 @@ function MainApp() {
               <Settings size={20} />
             </button>
           </div>
+          <SyncStatus />
         </div>
       </header>
 
@@ -169,7 +197,7 @@ function MainApp() {
 
         {activeTab === 'insights' && <InsightsTab selectedMonth={selectedMonth} />}
         {activeTab === 'summary' && <YearlySummary />}
-        {activeTab === 'range' && <RangeReport allCategories={allCategories} />}
+        {activeTab === 'range' && <RangeReport allCategories={rangeCategories} />}
       </div>
 
       <button
@@ -207,6 +235,9 @@ function MainApp() {
           updateSetting={updateSetting}
           bucketMap={bucketMap}
           updateBucketFor={useStore.getState().updateBucketFor}
+          addCategoryEntry={useStore.getState().addCategoryEntry}
+          removeCategoryEntry={useStore.getState().removeCategoryEntry}
+          removeWholeCategory={useStore.getState().removeWholeCategory}
           onDataChanged={() => useStore.getState().loadData()}
         />
       )}

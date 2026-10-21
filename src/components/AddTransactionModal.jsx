@@ -22,13 +22,42 @@ export function AddTransactionModal({
 
   const isIncome = type === 'Income';
   const allCategories = getCategories();
-  const availableCategories = isIncome
+  let availableCategories = isIncome
     ? ['Income']
     : allCategories.filter(c => c !== 'Income');
 
-  const availableSubcategories = getSubcategoriesFor(category);
+  let availableSubcategories = getSubcategoriesFor(category);
 
-  const derivedBucket = isIncome ? 'Income' : getBucketFromMap(category, subcategory);
+  // Editing an OLD transaction whose category or subcategory has since been removed:
+  // keep showing its own values so the form isn't blank and nothing gets changed by accident.
+  if (initialData && initialData.type === type) {
+    if (initialData.category && !availableCategories.includes(initialData.category)) {
+      availableCategories = [...availableCategories, initialData.category];
+    }
+    if (
+      initialData.category === category &&
+      initialData.subcategory &&
+      !availableSubcategories.includes(initialData.subcategory)
+    ) {
+      availableSubcategories = [...availableSubcategories, initialData.subcategory];
+    }
+  }
+
+  // If the category/subcategory is unchanged from what was saved, keep the bucket that
+  // was saved with the transaction (removed categories would otherwise fall back to
+  // "Discretionary" and silently change old data).
+  const isUnchangedEntry =
+    !!initialData &&
+    initialData.type === type &&
+    initialData.category === category &&
+    initialData.subcategory === subcategory &&
+    !!initialData.bucket;
+
+  const derivedBucket = isIncome
+    ? 'Income'
+    : isUnchangedEntry
+    ? initialData.bucket
+    : getBucketFromMap(category, subcategory);
   const isLoanRepayment =
     !isIncome && category === 'Personal' && subcategory === 'Loan Repayment';
 

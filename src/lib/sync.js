@@ -4,6 +4,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
 const EPOCH_KEY = 'finance_erp_sync_epoch';
+const LAST_OK_KEY = 'finance_erp_last_ok_sync';
+export const SYNC_EVENT = 'finance-sync-finished';
 // Bump this string whenever you want every device to do a full clean re-download.
 const SYNC_EPOCH = 'v7-dedupe-fix';
 
@@ -19,6 +21,13 @@ const UUID_TABLES = ['transactions', 'loans', 'bucket_map'];
 
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
+export const getLastOkSync = () => localStorage.getItem(LAST_OK_KEY);
+
+// Tells the rest of the app (the "Synced 2 min ago" line) that a sync just finished.
+function announceSync(ok, error) {
+  if (ok) localStorage.setItem(LAST_OK_KEY, new Date().toISOString());
+  window.dispatchEvent(new CustomEvent(SYNC_EVENT, { detail: { ok, error: error || null } }));
+}
 
 async function fetchAllRows(table, userId, sinceISO) {
   const allRows = [];
@@ -102,7 +111,11 @@ async function cleanupLocal() {
   }
 }
 
-export async function pushChanges() {
+/**
+ * liveOnly = true uploads ONLY things you typed in yourself (live transactions
+ * and loans). Used as a safety step before a device replaces its local data.
+ */
+export async function pushChanges({ liveOnly = false } = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return false;
 
@@ -110,7 +123,11 @@ export async function pushChanges() {
   let allSuccessful = true;
 
   for (const table of TABLES) {
-    const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
+    let pending = await db.table(table).where('syncStatus').equals('pending').toArray();
+    if (liveOnly) {
+      if (table === 'transactions') pending = pending.filter(r => !r.is_historical);
+      else if (table !== 'loans') continue;
+    }
     if (pending.length === 0) continue;
 
     const toPush = pending.map(row => {
@@ -173,6 +190,19 @@ export async function pullChanges(isFirstSync = false) {
     fetched[table] = await fetchAllRows(table, session.user.id, sinceISO);
   }
 
+  // Safety stop: never replace this device's data with a cloud answer that
+  // looks wrong (empty, or far smaller than what this device already holds).
+  if (isFirstSync) {
+    const localSynced = await db.transactions.where('syncStatus').equals('synced').count();
+    const cloudCount = fetched.transactions.length;
+    if (cloudCount === 0 || (localSynced > 100 && cloudCount < localSynced * 0.5)) {
+      throw new Error(
+        `Safety stop: the cloud returned ${cloudCount} transactions but this device has ${localSynced}. ` +
+        'Your local data was NOT replaced. Download a backup in Settings, then try again.'
+      );
+    }
+  }
+
   // Step 2: write into the local database, one table at a time, all-or-nothing.
   for (const table of TABLES) {
     const rows = fetched[table];
@@ -220,9 +250,10 @@ export async function pullChanges(isFirstSync = false) {
   setLastSync(pullStartedAt);
 }
 
+// Returns true (all good), false (finished but some changes didn't upload), or null (not signed in).
 async function runSync() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return;
+  if (!session) return null;
 
   // One-time reset after this fix is deployed: forget the old sync marker
   // so this device does one clean full download.
@@ -254,6 +285,14 @@ async function runSync() {
       setLastSync(new Date().toISOString());
     } else {
       // Cloud has data: wipe local and take the cloud's copy.
+      // Safety first: upload anything you typed in that hasn't reached the cloud yet,
+      // otherwise the wipe below would delete it. If this upload fails, stop.
+      const savedLive = await pushChanges({ liveOnly: true });
+      if (!savedLive) {
+        throw new Error(
+          'This device has entries that could not be uploaded, so it was not reset. Check your connection and try again.'
+        );
+      }
       await pullChanges(true);
       // Make sure historical seed rows exist (same ids on every device),
       // then upload anything new.
@@ -262,7 +301,7 @@ async function runSync() {
     }
 
     localStorage.setItem(EPOCH_KEY, SYNC_EPOCH);
-    return;
+    return true;
   }
 
   // Normal sync: push first. If the push fails, do NOT pull.
@@ -272,6 +311,7 @@ async function runSync() {
   } else {
     console.warn('Push failed. Skipping pull so local edits are not overwritten.');
   }
+  return pushOk;
 }
 
 let runningSync = null;
@@ -290,6 +330,16 @@ export function syncAll() {
     ? navigator.locks.request('finance-erp-sync', task)
     : task();
 
-  runningSync = Promise.resolve(wrapped).finally(() => { runningSync = null; });
+  runningSync = Promise.resolve(wrapped)
+    .then((result) => {
+      if (result === true) announceSync(true);
+      else if (result === false) announceSync(false, 'Some changes could not be uploaded. Will retry.');
+      return result;
+    })
+    .catch((err) => {
+      announceSync(false, err.message || String(err));
+      throw err;
+    })
+    .finally(() => { runningSync = null; });
   return runningSync;
 }
