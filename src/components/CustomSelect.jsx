@@ -1,3 +1,4 @@
+
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
 import { useClickOutside } from '../hooks/useClickOutside';
@@ -24,19 +25,32 @@ export function CustomSelect({
     if (!isOpen) setSearch('');
   }, [isOpen]);
 
-  // Force focus on mobile to bring up keyboard immediately
+  // Focus the search box automatically on desktop only. On a phone, auto-focusing
+  // opens the on-screen keyboard, which squashes the screen and shifts the list while
+  // you are scrolling or tapping - that made taps on an option get lost. On a phone,
+  // tap the search box yourself when you want the keyboard.
   useEffect(() => {
-    if (isOpen && searchable && searchRef.current) {
-      setTimeout(() => searchRef.current?.focus(), 100);
-    }
+    if (!isOpen || !searchable) return;
+    const isTouchDevice =
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(pointer: coarse)').matches;
+    if (isTouchDevice) return;
+    const t = setTimeout(() => searchRef.current?.focus(), 50);
+    return () => clearTimeout(t);
   }, [isOpen, searchable]);
 
   // Always show search if searchable is true
   const showSearch = searchable;
   
-  const filtered = showSearch && search.trim()
-    ? options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
-    : options;
+  // Remove blanks and duplicates (duplicate entries confuse React's list handling
+  // and can make filtering/selection act strangely), keeping the original order.
+  const cleanOptions = [...new Set((options || []).map(o => String(o ?? '')).filter(o => o !== ''))];
+
+  const query = search.trim().toLowerCase();
+  const filtered = showSearch && query
+    ? cleanOptions.filter(o => o.toLowerCase().includes(query))
+    : cleanOptions;
 
   const displayValue = value || placeholder;
   const isPlaceholder = !value;
@@ -75,13 +89,29 @@ export function CustomSelect({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter inside the search box must not submit the surrounding form.
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (filtered.length === 1) handleSelect(filtered[0]);
+                  }
+                }}
                 placeholder="Search..."
-                className="w-full pl-8 pr-3 py-2 text-sm outline-none"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="w-full pl-8 pr-3 py-2 text-base sm:text-sm outline-none"
               />
             </div>
           )}
 
-          <div className="max-h-60 overflow-y-auto">
+          {/* Pressing an option must not steal focus from the search box, otherwise the
+              on-screen keyboard collapses and shifts the list before the tap registers. */}
+          <div
+            className="max-h-60 overflow-y-auto overscroll-contain"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+            onMouseDown={(e) => e.preventDefault()}
+          >
             {!required && (
               <button
                 type="button"
@@ -97,12 +127,12 @@ export function CustomSelect({
             {filtered.length === 0 ? (
               <div className="px-3 py-4 text-xs text-gray-400 text-center">No matches.</div>
             ) : (
-              filtered.map(opt => (
+              filtered.map((opt, i) => (
                 <button
-                  key={opt}
+                  key={`${i}-${opt}`}
                   type="button"
                   onClick={() => handleSelect(opt)}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 truncate ${
+                  className={`w-full text-left px-3 py-3 sm:py-2 text-sm hover:bg-gray-50 truncate ${
                     opt === value ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-gray-700'
                   }`}
                 >
@@ -116,3 +146,4 @@ export function CustomSelect({
     </div>
   );
 }
+

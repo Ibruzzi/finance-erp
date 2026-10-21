@@ -430,8 +430,9 @@ If you are developing a production application, we recommend using TypeScript wi
 ================================================================================
 FILE: src/App.jsx
 PATH: /home/iburu/finance-erp/src/App.jsx
-SIZE: 8880 bytes    LINES: 244
+SIZE: 12593 bytes    LINES: 328
 ================================================================================
+
 
 import { useEffect, useState } from 'react';
 import { useStore } from './store/useStore';
@@ -440,6 +441,7 @@ import { Plus, CreditCard, Settings, RefreshCw } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 import { syncAll } from './lib/sync';
 import { AuthGate } from './components/AuthGate';
+import { SyncStatus } from './components/SyncStatus';
 
 import { MonthPicker } from './components/MonthPicker';
 import { AppTabs } from './components/AppTabs';
@@ -455,6 +457,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { YearlySummary } from './components/YearlySummary';
 import { RangeReport } from './components/RangeReport';
 import { InsightsTab } from './components/InsightsTab';
+import { BalanceReminderModal } from './components/BalanceReminderModal';
+import { getDueReminderMonths } from './utils/balanceReminder';
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -468,7 +472,7 @@ function MainApp() {
     loadData, isLoading, settings, getBucketBalances, getCategoryTotals,
     calculateZakat, addTransaction, updateTransaction, deleteTransaction,
     getMonthTransactions, bucketMap, getBucketFromMap, getSubcategoriesFor,
-    getCategories, updateSetting, loans, getLoanPaid, getTotalDebtPayable
+    getCategories, updateSetting, loans, getLoanPaid, getTotalDebtPayable, transactions
   } = useStore();
   
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7));
@@ -481,15 +485,40 @@ function MainApp() {
   const [includeHistorical, setIncludeHistorical] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // ---- Month-end bank balance reminder ----
+  // `now` is refreshed when the app is reopened/refocused and every 30 minutes, so the
+  // reminder appears on the last day of the month (or the next time the app is opened).
+  const [now, setNow] = useState(() => new Date());
+  // Months the user pressed "Remind me later" for: hidden until the app is reopened.
+  const [snoozedMonths, setSnoozedMonths] = useState([]);
+
   useEffect(() => {
     initSettings().then(() => loadData());
   }, [loadData]);
 
+  useEffect(() => {
+    const refresh = () => setNow(new Date());
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(refresh, 30 * 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(timer);
+    };
+  }, []);
+
   const handleManualSync = async () => {
     setIsSyncing(true);
-    await syncAll();
-    await loadData();
-    setIsSyncing(false);
+    try {
+      await syncAll();
+      await loadData();
+    } catch (err) {
+      console.error('Manual sync failed:', err);
+      alert('Sync problem: ' + (err.message || err));
+    } finally {
+      // Always switch the spinner off, even if the sync failed.
+      setIsSyncing(false);
+    }
   };
 
   if (isLoading) return <div className="p-10 text-center text-gray-500">Loading Finance ERP...</div>;
@@ -500,6 +529,35 @@ function MainApp() {
   const monthTransactions = getMonthTransactions(selectedMonth, includeHistorical);
   const totalDebt = getTotalDebtPayable();
   const allCategories = getCategories();
+
+  // The Range report's category filter should also list categories that were removed
+  // from the Bucket Map but still exist on past transactions.
+  const rangeCategories = [
+    ...allCategories,
+    ...[...new Set(transactions.filter(t => t.deleted !== true).map(t => t.category).filter(Boolean))]
+      .filter(c => !allCategories.includes(c))
+      .sort((a, b) => a.localeCompare(b)),
+  ];
+
+  // Which month (if any) should we ask a bank balance for right now?
+  const reminderEnabled = settings.balance_reminder_enabled !== false; // on unless switched off
+  const dueReminderMonths = reminderEnabled
+    ? getDueReminderMonths(now, settings.month_balances || {}, settings.balance_reminder_skipped || [])
+        .filter(k => !snoozedMonths.includes(k))
+    : [];
+  const reminderMonth = dueReminderMonths[0] || null;
+
+  const handleSaveReminderBalance = async (monthKey, amount) => {
+    const latest = useStore.getState().settings.month_balances || {};
+    await updateSetting('month_balances', { ...latest, [monthKey]: amount });
+  };
+
+  const handleSkipReminderMonth = async (monthKey) => {
+    const latest = useStore.getState().settings.balance_reminder_skipped || [];
+    if (!latest.includes(monthKey)) {
+      await updateSetting('balance_reminder_skipped', [...latest, monthKey]);
+    }
+  };
 
   const handleEdit = (t) => {
     setEditingTransaction(t);
@@ -512,6 +570,16 @@ function MainApp() {
     }
   };
 
+  // The payment must be dated INSIDE the month being viewed, because that is
+  // where the zakat calculation looks for it. For the current month that is
+  // right now; for any other month it is that month's last day.
+  const zakatPaymentDate = () => {
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    if (selectedMonth === currentMonth) return new Date().toISOString();
+    const [y, m] = selectedMonth.split('-').map(Number);
+    return new Date(Date.UTC(y, m, 0, 12, 0, 0)).toISOString();
+  };
+
   const handleMarkZakatPaid = async (amount) => {
     await addTransaction({
       type: 'Expense',
@@ -521,7 +589,7 @@ function MainApp() {
       currency: 'MVR',
       bucket: 'Financial/Obligatory',
       notes: `Zakat paid for ${selectedMonth}`,
-      date: new Date().toISOString()
+      date: zakatPaymentDate()
     });
     setIsZakatPaidOpen(false);
   };
@@ -562,6 +630,7 @@ function MainApp() {
               <Settings size={20} />
             </button>
           </div>
+          <SyncStatus />
         </div>
       </header>
 
@@ -604,7 +673,7 @@ function MainApp() {
 
         {activeTab === 'insights' && <InsightsTab selectedMonth={selectedMonth} />}
         {activeTab === 'summary' && <YearlySummary />}
-        {activeTab === 'range' && <RangeReport allCategories={allCategories} />}
+        {activeTab === 'range' && <RangeReport allCategories={rangeCategories} />}
       </div>
 
       <button
@@ -642,6 +711,9 @@ function MainApp() {
           updateSetting={updateSetting}
           bucketMap={bucketMap}
           updateBucketFor={useStore.getState().updateBucketFor}
+          addCategoryEntry={useStore.getState().addCategoryEntry}
+          removeCategoryEntry={useStore.getState().removeCategoryEntry}
+          removeWholeCategory={useStore.getState().removeWholeCategory}
           onDataChanged={() => useStore.getState().loadData()}
         />
       )}
@@ -651,6 +723,17 @@ function MainApp() {
           onClose={() => setIsZakatPaidOpen(false)}
           onConfirm={handleMarkZakatPaid}
           suggestedAmount={zakat.zakatDue}
+        />
+      )}
+
+      {reminderMonth && !isSettingsOpen && (
+        <BalanceReminderModal
+          key={reminderMonth}
+          monthKey={reminderMonth}
+          remaining={dueReminderMonths.length}
+          onSave={handleSaveReminderBalance}
+          onLater={() => setSnoozedMonths(prev => [...prev, reminderMonth])}
+          onSkip={() => handleSkipReminderMonth(reminderMonth)}
         />
       )}
 
@@ -678,15 +761,18 @@ function App() {
 
 export default App;
 
+
 ================================================================================
 FILE: src/components/AddTransactionModal.jsx
 PATH: /home/iburu/finance-erp/src/components/AddTransactionModal.jsx
-SIZE: 8351 bytes    LINES: 232
+SIZE: 10831 bytes    LINES: 285
 ================================================================================
+
 
 import { useState } from 'react';
 import { X, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import { CustomSelect } from './CustomSelect';
+import { autoLoanUuidFor, findDadLoan, isBappaExpense, BAPPA_LOAN_THRESHOLD } from '../store/useStore';
 
 export function AddTransactionModal({
   onClose,
@@ -708,15 +794,53 @@ export function AddTransactionModal({
 
   const isIncome = type === 'Income';
   const allCategories = getCategories();
-  const availableCategories = isIncome
+  let availableCategories = isIncome
     ? ['Income']
     : allCategories.filter(c => c !== 'Income');
 
-  const availableSubcategories = getSubcategoriesFor(category);
+  let availableSubcategories = getSubcategoriesFor(category);
 
-  const derivedBucket = isIncome ? 'Income' : getBucketFromMap(category, subcategory);
+  // Editing an OLD transaction whose category or subcategory has since been removed:
+  // keep showing its own values so the form isn't blank and nothing gets changed by accident.
+  if (initialData && initialData.type === type) {
+    if (initialData.category && !availableCategories.includes(initialData.category)) {
+      availableCategories = [...availableCategories, initialData.category];
+    }
+    if (
+      initialData.category === category &&
+      initialData.subcategory &&
+      !availableSubcategories.includes(initialData.subcategory)
+    ) {
+      availableSubcategories = [...availableSubcategories, initialData.subcategory];
+    }
+  }
+
+  // If the category/subcategory is unchanged from what was saved, keep the bucket that
+  // was saved with the transaction (removed categories would otherwise fall back to
+  // "Discretionary" and silently change old data).
+  const isUnchangedEntry =
+    !!initialData &&
+    initialData.type === type &&
+    initialData.category === category &&
+    initialData.subcategory === subcategory &&
+    !!initialData.bucket;
+
+  const derivedBucket = isIncome
+    ? 'Income'
+    : isUnchangedEntry
+    ? initialData.bucket
+    : getBucketFromMap(category, subcategory);
   const isLoanRepayment =
     !isIncome && category === 'Personal' && subcategory === 'Loan Repayment';
+
+  // Family > Bappa above the threshold is deducted from the "Dad" loan automatically.
+  const amountMvrPreview =
+    (parseFloat(amount) || 0) *
+    (currency === 'USD' ? (initialData?.exchange_rate_at_time || settings.current_usd_rate || 15.42) : 1);
+  const bappaCandidate = isBappaExpense({ type, category, subcategory });
+  const bappaOverThreshold = bappaCandidate && amountMvrPreview > BAPPA_LOAN_THRESHOLD;
+  const dadLoan = findDadLoan(loans);
+  const willDeductFromDad = !!autoLoanUuidFor({ type, category, subcategory }, amountMvrPreview, loans);
 
   const handleTypeChange = (newType) => {
     setType(newType);
@@ -892,6 +1016,18 @@ export function AddTransactionModal({
             </div>
           )}
 
+          {bappaOverThreshold && (
+            willDeductFromDad ? (
+              <div className="p-3 rounded-lg text-xs bg-green-50 text-green-700 border border-green-200">
+                This will also be deducted from the loan <strong>{dadLoan?.name}</strong> (no separate repayment is recorded).
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg text-xs bg-amber-50 text-amber-700 border border-amber-200">
+                No loan named "Dad" was found, so this will be saved as a normal expense. Add a loan called Dad (Loans button) to have amounts above RF {BAPPA_LOAN_THRESHOLD} deducted from it.
+              </div>
+            )
+          )}
+
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">
               Notes (Optional)
@@ -916,6 +1052,7 @@ export function AddTransactionModal({
     </div>
   );
 }
+
 
 ================================================================================
 FILE: src/components/AppTabs.jsx
@@ -1405,8 +1542,9 @@ export function CategoryTotals({ totals, grandTotal }) {
 ================================================================================
 FILE: src/components/CustomSelect.jsx
 PATH: /home/iburu/finance-erp/src/components/CustomSelect.jsx
-SIZE: 3854 bytes    LINES: 118
+SIZE: 5404 bytes    LINES: 149
 ================================================================================
+
 
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
@@ -1434,19 +1572,32 @@ export function CustomSelect({
     if (!isOpen) setSearch('');
   }, [isOpen]);
 
-  // Force focus on mobile to bring up keyboard immediately
+  // Focus the search box automatically on desktop only. On a phone, auto-focusing
+  // opens the on-screen keyboard, which squashes the screen and shifts the list while
+  // you are scrolling or tapping - that made taps on an option get lost. On a phone,
+  // tap the search box yourself when you want the keyboard.
   useEffect(() => {
-    if (isOpen && searchable && searchRef.current) {
-      setTimeout(() => searchRef.current?.focus(), 100);
-    }
+    if (!isOpen || !searchable) return;
+    const isTouchDevice =
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(pointer: coarse)').matches;
+    if (isTouchDevice) return;
+    const t = setTimeout(() => searchRef.current?.focus(), 50);
+    return () => clearTimeout(t);
   }, [isOpen, searchable]);
 
   // Always show search if searchable is true
   const showSearch = searchable;
   
-  const filtered = showSearch && search.trim()
-    ? options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
-    : options;
+  // Remove blanks and duplicates (duplicate entries confuse React's list handling
+  // and can make filtering/selection act strangely), keeping the original order.
+  const cleanOptions = [...new Set((options || []).map(o => String(o ?? '')).filter(o => o !== ''))];
+
+  const query = search.trim().toLowerCase();
+  const filtered = showSearch && query
+    ? cleanOptions.filter(o => o.toLowerCase().includes(query))
+    : cleanOptions;
 
   const displayValue = value || placeholder;
   const isPlaceholder = !value;
@@ -1485,13 +1636,29 @@ export function CustomSelect({
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter inside the search box must not submit the surrounding form.
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (filtered.length === 1) handleSelect(filtered[0]);
+                  }
+                }}
                 placeholder="Search..."
-                className="w-full pl-8 pr-3 py-2 text-sm outline-none"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                className="w-full pl-8 pr-3 py-2 text-base sm:text-sm outline-none"
               />
             </div>
           )}
 
-          <div className="max-h-60 overflow-y-auto">
+          {/* Pressing an option must not steal focus from the search box, otherwise the
+              on-screen keyboard collapses and shifts the list before the tap registers. */}
+          <div
+            className="max-h-60 overflow-y-auto overscroll-contain"
+            style={{ WebkitOverflowScrolling: 'touch' }}
+            onMouseDown={(e) => e.preventDefault()}
+          >
             {!required && (
               <button
                 type="button"
@@ -1507,12 +1674,12 @@ export function CustomSelect({
             {filtered.length === 0 ? (
               <div className="px-3 py-4 text-xs text-gray-400 text-center">No matches.</div>
             ) : (
-              filtered.map(opt => (
+              filtered.map((opt, i) => (
                 <button
-                  key={opt}
+                  key={`${i}-${opt}`}
                   type="button"
                   onClick={() => handleSelect(opt)}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-gray-50 truncate ${
+                  className={`w-full text-left px-3 py-3 sm:py-2 text-sm hover:bg-gray-50 truncate ${
                     opt === value ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-gray-700'
                   }`}
                 >
@@ -1526,6 +1693,7 @@ export function CustomSelect({
     </div>
   );
 }
+
 
 ================================================================================
 FILE: src/components/DatePicker.jsx
@@ -1768,11 +1936,12 @@ export function DatePicker({ value, onChange }) {
 ================================================================================
 FILE: src/components/ImportModal.jsx
 PATH: /home/iburu/finance-erp/src/components/ImportModal.jsx
-SIZE: 12860 bytes    LINES: 323
+SIZE: 18218 bytes    LINES: 450
 ================================================================================
 
 import { useState } from 'react';
 import { X, Upload, CheckCircle, AlertCircle } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 import { db } from '../db/database';
 import { CustomSelect } from './CustomSelect';
@@ -1787,6 +1956,9 @@ export function ImportModal({ onClose, onImportComplete }) {
   const [mapping, setMapping] = useState({});
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  // Preview step: the cleaned-up rows, plus how many look like ones you already have.
+  const [preview, setPreview] = useState(null);
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
 
   const DB_FIELDS = [
     { key: 'date', label: 'Date', required: true },
@@ -1877,90 +2049,167 @@ export function ImportModal({ onClose, onImportComplete }) {
     setMapping({ ...mapping, [dbField]: idx });
   };
 
-  const handleImport = async () => {
-    setIsImporting(true);
-    let successCount = 0;
-    let errorCount = 0;
+  // Reads every spreadsheet row and turns it into a clean transaction.
+  // Rows with missing/invalid data are counted as "invalid" and skipped.
+  const buildBatch = () => {
+    let invalid = 0;
+    const batch = [];
 
-    try {
-      const batch = [];
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
 
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row || row.length === 0) continue;
+      const dateVal = mapping.date !== undefined ? row[mapping.date] : null;
+      const catVal = mapping.category !== undefined ? row[mapping.category] : null;
+      const subVal = mapping.subcategory !== undefined ? row[mapping.subcategory] : '';
+      const amtVal = mapping.amount_original !== undefined ? row[mapping.amount_original] : null;
+      const currVal = mapping.currency !== undefined ? row[mapping.currency] : 'MVR';
+      const notesVal = mapping.notes !== undefined ? row[mapping.notes] : '';
 
-        const dateVal = mapping.date !== undefined ? row[mapping.date] : null;
-        const catVal = mapping.category !== undefined ? row[mapping.category] : null;
-        const subVal = mapping.subcategory !== undefined ? row[mapping.subcategory] : '';
-        const amtVal = mapping.amount_original !== undefined ? row[mapping.amount_original] : null;
-        const currVal = mapping.currency !== undefined ? row[mapping.currency] : 'MVR';
-        const notesVal = mapping.notes !== undefined ? row[mapping.notes] : '';
-
-        if (!dateVal || !catVal || amtVal === null || amtVal === '') {
-          errorCount++;
-          continue;
-        }
-
-        let finalDate;
-        if (typeof dateVal === 'number') {
-          const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-          const msPerDay = 24 * 60 * 60 * 1000;
-          finalDate = new Date(excelEpoch.getTime() + dateVal * msPerDay).toISOString();
-        } else if (typeof dateVal === 'string') {
-          const ddmmyyyy = dateVal.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-          if (ddmmyyyy) {
-            const [, d, m, yRaw] = ddmmyyyy;
-            const y = yRaw.length === 2 ? '20' + yRaw : yRaw;
-            const dt = new Date(Number(y), Number(m) - 1, Number(d), 12, 0, 0);
-            finalDate = dt.toISOString();
-          } else {
-            const parsed = new Date(dateVal);
-            finalDate = isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
-          }
-        } else {
-          finalDate = new Date().toISOString();
-        }
-
-        const numericAmount = parseFloat(String(amtVal).replace(/[^0-9.-]+/g, ''));
-        if (isNaN(numericAmount)) {
-          errorCount++;
-          continue;
-        }
-
-        const type = String(catVal).toLowerCase().includes('income') ? 'Income' : 'Expense';
-        const currency = String(currVal).toUpperCase() === 'USD' ? 'USD' : 'MVR';
-        // For historical rows, we set exchange_rate to 15.42 but the rate is stored.
-        // The app's logic will use the stored amount_mvr.
-        const rate = currency === 'USD' ? 15.42 : 1; 
-        const amount_mvr = currency === 'USD' ? numericAmount * rate : numericAmount;
-
-        batch.push({
-          date: finalDate,
-          category: String(catVal).trim(),
-          subcategory: String(subVal).trim(),
-          amount_original: numericAmount,
-          currency: currency,
-          amount_mvr: amount_mvr,
-          exchange_rate_at_time: rate,
-          type: type,
-          is_historical: true,
-          notes: String(notesVal).trim(),
-          bucket: 'Discretionary' // Fallback bucket for imported data
-        });
+      if (!dateVal || !catVal || amtVal === null || amtVal === '') {
+        invalid++;
+        continue;
       }
 
+      let finalDate;
+      if (typeof dateVal === 'number') {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        const msPerDay = 24 * 60 * 60 * 1000;
+        finalDate = new Date(excelEpoch.getTime() + dateVal * msPerDay).toISOString();
+      } else if (typeof dateVal === 'string') {
+        const ddmmyyyy = dateVal.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+        if (ddmmyyyy) {
+          const [, d, m, yRaw] = ddmmyyyy;
+          const y = yRaw.length === 2 ? '20' + yRaw : yRaw;
+          const dt = new Date(Number(y), Number(m) - 1, Number(d), 12, 0, 0);
+          finalDate = dt.toISOString();
+        } else {
+          const parsed = new Date(dateVal);
+          finalDate = isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+        }
+      } else {
+        finalDate = new Date().toISOString();
+      }
+
+      const numericAmount = parseFloat(String(amtVal).replace(/[^0-9.-]+/g, ''));
+      if (isNaN(numericAmount)) {
+        invalid++;
+        continue;
+      }
+
+      const type = String(catVal).toLowerCase().includes('income') ? 'Income' : 'Expense';
+      const currency = String(currVal).toUpperCase() === 'USD' ? 'USD' : 'MVR';
+      // For historical rows, we set exchange_rate to 15.42 but the rate is stored.
+      // The app's logic will use the stored amount_mvr.
+      const rate = currency === 'USD' ? 15.42 : 1;
+      const amount_mvr = currency === 'USD' ? numericAmount * rate : numericAmount;
+
+      batch.push({
+        date: finalDate,
+        category: String(catVal).trim(),
+        subcategory: String(subVal).trim(),
+        amount_original: numericAmount,
+        currency: currency,
+        amount_mvr: amount_mvr,
+        exchange_rate_at_time: rate,
+        type: type,
+        is_historical: true,
+        notes: String(notesVal).trim(),
+        bucket: 'Discretionary' // Fallback bucket for imported data
+      });
+    }
+
+    return { batch, invalid };
+  };
+
+  // Two entries are "the same" if day, category, subcategory, amount and notes all match.
+  const duplicateKey = (t) =>
+    [
+      String(t.date).slice(0, 10),
+      t.category,
+      t.subcategory || '',
+      Number(t.amount_original).toFixed(2),
+      (t.notes || '').trim(),
+    ].join('|');
+
+  // Step 2 -> Step 3: build the rows and compare them with what is already saved.
+  const handlePreview = async () => {
+    setIsImporting(true);
+    try {
+      const { batch, invalid } = buildBatch();
+
+      // Count what is already on this device, so repeated legitimate rows
+      // (e.g. two identical purchases on one day) are matched one-for-one.
+      const existing = await db.transactions.toArray();
+      const existingCounts = new Map();
+      existing.forEach(t => {
+        if (t.deleted === true) return;
+        const k = duplicateKey(t);
+        existingCounts.set(k, (existingCounts.get(k) || 0) + 1);
+      });
+
+      const flagged = batch.map(t => {
+        const k = duplicateKey(t);
+        const left = existingCounts.get(k) || 0;
+        if (left > 0) {
+          existingCounts.set(k, left - 1);
+          return { ...t, _isDuplicate: true };
+        }
+        return { ...t, _isDuplicate: false };
+      });
+
+      const dates = batch.map(t => t.date).sort();
+      setPreview({
+        rows: flagged,
+        invalid,
+        duplicates: flagged.filter(t => t._isDuplicate).length,
+        firstDate: dates[0] ? dates[0].slice(0, 10) : null,
+        lastDate: dates.length ? dates[dates.length - 1].slice(0, 10) : null,
+      });
+      setStep(3);
+    } catch (err) {
+      console.error('[Import] preview failed:', err);
+      alert('Could not read the file: ' + (err.message || err));
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // Step 3 -> Step 4: write to the database.
+  const handleImport = async () => {
+    if (!preview) return;
+    setIsImporting(true);
+    let successCount = 0;
+
+    try {
+      const nowISO = new Date().toISOString();
+      const toWrite = preview.rows
+        .filter(t => !(skipDuplicates && t._isDuplicate))
+        .map(({ _isDuplicate, ...t }) => ({
+          ...t,
+          // These make the rows sync to the cloud like everything else.
+          uuid: uuidv4(),
+          syncStatus: 'pending',
+          updated_at: nowISO,
+          deleted: false,
+        }));
+
       const BATCH_SIZE = 1000;
-      for (let i = 0; i < batch.length; i += BATCH_SIZE) {
-        const chunk = batch.slice(i, i + BATCH_SIZE);
-        const ids = await db.transactions.bulkAdd(chunk, { allKeys: true });
+      for (let i = 0; i < toWrite.length; i += BATCH_SIZE) {
+        const chunk = toWrite.slice(i, i + BATCH_SIZE);
+        await db.transactions.bulkAdd(chunk);
         successCount += chunk.length;
       }
 
-      setImportResult({ success: successCount, errors: errorCount });
+      setImportResult({
+        success: successCount,
+        errors: preview.invalid,
+        skippedDuplicates: skipDuplicates ? preview.duplicates : 0,
+      });
       setStep(4);
     } catch (err) {
       console.error('[Import] FATAL:', err);
-      setImportResult({ success: successCount, errors: errorCount + 1, fatalError: err.message || String(err) });
+      setImportResult({ success: successCount, errors: preview.invalid + 1, fatalError: err.message || String(err) });
       setStep(4);
     } finally {
       setIsImporting(false);
@@ -1996,7 +2245,7 @@ export function ImportModal({ onClose, onImportComplete }) {
               </label>
             </div>
             <p className="text-xs text-gray-400">
-              Imported data is marked as <strong>historical</strong> and will not affect current Zakat or Bucket calculations.
+              Imported data is marked as <strong>historical</strong> and will not affect current Zakat or Bucket calculations. It will be uploaded to your cloud backup on the next sync.
             </p>
           </div>
         )}
@@ -2054,11 +2303,54 @@ export function ImportModal({ onClose, onImportComplete }) {
                 Back
               </button>
               <button
-                onClick={handleImport}
+                onClick={handlePreview}
                 disabled={isImporting || mapping.date === undefined || mapping.category === undefined || mapping.amount_original === undefined}
                 className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold disabled:opacity-50"
               >
-                {isImporting ? 'Importing...' : `Import ${rows.length} Rows`}
+                {isImporting ? 'Checking...' : 'Review Import'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === 3 && preview && (
+          <div className="space-y-4 flex-1 overflow-y-auto">
+            <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm text-gray-700">
+              <div className="flex justify-between"><span>Rows ready to import</span><strong>{preview.rows.length}</strong></div>
+              <div className="flex justify-between"><span>Look like duplicates of entries you already have</span><strong className={preview.duplicates > 0 ? 'text-orange-600' : ''}>{preview.duplicates}</strong></div>
+              <div className="flex justify-between"><span>Skipped (missing or invalid data)</span><strong className={preview.invalid > 0 ? 'text-red-500' : ''}>{preview.invalid}</strong></div>
+              {preview.firstDate && (
+                <div className="flex justify-between"><span>Date range</span><strong>{preview.firstDate} → {preview.lastDate}</strong></div>
+              )}
+            </div>
+
+            {preview.duplicates > 0 && (
+              <label className="flex items-start gap-2 text-sm text-gray-700 bg-orange-50 p-3 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={skipDuplicates}
+                  onChange={(e) => setSkipDuplicates(e.target.checked)}
+                  className="accent-blue-600 mt-0.5"
+                />
+                <span>
+                  Skip the {preview.duplicates} likely duplicates
+                  <span className="block text-xs text-gray-500">Matched on date, category, subcategory, amount and notes.</span>
+                </span>
+              </label>
+            )}
+
+            <div className="flex gap-2 pt-4 border-t border-gray-100 flex-shrink-0">
+              <button onClick={() => { setPreview(null); setStep(2); }} className="flex-1 bg-gray-100 text-gray-700 py-3 rounded-lg font-bold">
+                Back
+              </button>
+              <button
+                onClick={handleImport}
+                disabled={isImporting || (skipDuplicates ? preview.rows.length - preview.duplicates : preview.rows.length) === 0}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold disabled:opacity-50"
+              >
+                {isImporting
+                  ? 'Importing...'
+                  : `Import ${skipDuplicates ? preview.rows.length - preview.duplicates : preview.rows.length} Rows`}
               </button>
             </div>
           </div>
@@ -2078,6 +2370,9 @@ export function ImportModal({ onClose, onImportComplete }) {
                 <p className="text-lg font-bold text-green-600">Import Complete</p>
                 <div className="text-sm text-gray-600">
                   <p><strong>{importResult.success}</strong> rows imported successfully.</p>
+                  {importResult.skippedDuplicates > 0 && (
+                    <p className="text-orange-600 mt-1"><strong>{importResult.skippedDuplicates}</strong> likely duplicates skipped.</p>
+                  )}
                   {importResult.errors > 0 && (
                     <p className="text-red-500 mt-1"><strong>{importResult.errors}</strong> rows skipped due to invalid data.</p>
                   )}
@@ -2098,7 +2393,7 @@ export function ImportModal({ onClose, onImportComplete }) {
 ================================================================================
 FILE: src/components/InsightsTab.jsx
 PATH: /home/iburu/finance-erp/src/components/InsightsTab.jsx
-SIZE: 17315 bytes    LINES: 427
+SIZE: 17555 bytes    LINES: 428
 ================================================================================
 
 import { useMemo } from 'react';
@@ -2107,11 +2402,6 @@ import { TrendingUp, TrendingDown, Minus, Flame, Calendar, CheckCircle, AlertTri
 import { formatMoney } from '../utils/format';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-// Should the "Budget Pulse" card count historical (imported) rows?
-// false = same rule as the rest of the app: historical rows never touch live bucket math.
-// Set to true if you want Budget Pulse to also work for past months.
-const BUDGET_PULSE_INCLUDES_HISTORICAL = false;
 
 // The 2018-2022 rows are whole-year lumps (notes like "2018 aggregates") parked on
 // one date. They can't be split into months, so monthly insights skip them.
@@ -2208,10 +2498,12 @@ export function InsightsTab({ selectedMonth }) {
     [transactions]
   );
 
-  // What Budget Pulse is allowed to see.
+  // What Budget Pulse is allowed to see. Controlled by Settings → General
+  // ("Include imported historical entries in Insights → Budget Pulse"). Off by default.
+  const budgetIncludesHistorical = settings.budget_pulse_include_historical === true;
   const budgetTx = useMemo(
-    () => (BUDGET_PULSE_INCLUDES_HISTORICAL ? monthlyTx : monthlyTx.filter(t => !t.is_historical)),
-    [monthlyTx]
+    () => (budgetIncludesHistorical ? monthlyTx : monthlyTx.filter(t => !t.is_historical)),
+    [monthlyTx, budgetIncludesHistorical]
   );
 
   const thisMonth = selectedMonth;
@@ -2270,16 +2562,18 @@ export function InsightsTab({ selectedMonth }) {
     let totalDue = 0;
     let totalPaid = 0;
     let eligibleMonths = 0;
+    let balancesEntered = 0;
     for (let i = 1; i <= 12; i++) {
       const m = `${year}-${String(i).padStart(2, '0')}`;
       const z = calculateZakat(m);
+      if (!z.noBalance) balancesEntered += 1;
       if (z.eligible) {
         eligibleMonths += 1;
         totalDue += z.baseZakat;
         totalPaid += z.zakatPaidThisMonth;
       }
     }
-    return { totalDue, totalPaid, outstanding: Math.max(0, totalDue - totalPaid), eligibleMonths };
+    return { totalDue, totalPaid, outstanding: Math.max(0, totalDue - totalPaid), eligibleMonths, balancesEntered };
   }, [thisMonth, calculateZakat]);
 
   const bucketPulse = useMemo(() => {
@@ -2476,7 +2770,9 @@ export function InsightsTab({ selectedMonth }) {
           </div>
         </div>
         <div className="text-[11px] text-gray-400 mt-3 text-center">
-          Eligible months this year: {zakatYTD.eligibleMonths} / 12
+          {zakatYTD.balancesEntered === 0
+            ? `No bank balances entered for ${thisMonth.slice(0, 4)} yet. Add them in Settings → Zakat Inputs.`
+            : `Balances entered: ${zakatYTD.balancesEntered} / 12 • Eligible months: ${zakatYTD.eligibleMonths}`}
         </div>
       </SectionCard>
 
@@ -2518,7 +2814,7 @@ export function InsightsTab({ selectedMonth }) {
         </div>
         {bucketPulse.every(b => b.allocated === 0) && (
           <div className="text-[11px] text-gray-400 mt-3 text-center">
-            {BUDGET_PULSE_INCLUDES_HISTORICAL
+            {budgetIncludesHistorical
               ? 'No income logged this month — allocations show as RF 0.00.'
               : 'No live income logged this month — allocations show as RF 0.00. (Imported historical entries are not counted in budget math.)'}
           </div>
@@ -3168,17 +3464,26 @@ export function RecentTransactions({ transactions, onEdit, onDelete }) {
 ================================================================================
 FILE: src/components/SettingsModal.jsx
 PATH: /home/iburu/finance-erp/src/components/SettingsModal.jsx
-SIZE: 14114 bytes    LINES: 245
+SIZE: 24027 bytes    LINES: 453
 ================================================================================
 
+
 import { useState } from 'react';
-import { X, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, Search, ChevronLeft, ChevronRight, Trash2, Plus } from 'lucide-react';
 import { BucketDropdown } from './BucketDropdown';
+import { CustomSelect } from './CustomSelect';
+import { isProtectedCategory, isProtectedEntry } from '../store/useStore';
 import { ImportModal } from './ImportModal';
+import { downloadBackup } from '../utils/backup';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function SettingsModal({ onClose, settings, updateSetting, bucketMap, updateBucketFor, onDataChanged }) {
+const NEW_CATEGORY_OPTION = '+ New category…';
+
+export function SettingsModal({
+  onClose, settings, updateSetting, bucketMap, updateBucketFor, onDataChanged,
+  addCategoryEntry, removeCategoryEntry, removeWholeCategory
+}) {
   const [activeTab, setActiveTab] = useState('general');
   const [searchTerm, setSearchTerm] = useState('');
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -3191,6 +3496,69 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
     financial_pct: settings.financial_pct || 15,
     savings_pct: settings.savings_pct || 35,
   });
+
+  // Insights → Budget Pulse: should it also count imported historical entries?
+  const [budgetPulseHist, setBudgetPulseHist] = useState(settings.budget_pulse_include_historical === true);
+
+  const [backupMsg, setBackupMsg] = useState('');
+
+  // ----- Add / remove categories (Bucket Map tab) -----
+  const [addCategory, setAddCategory] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newSubcategory, setNewSubcategory] = useState('');
+  const [addBucket, setAddBucket] = useState('Discretionary');
+  const [catMessage, setCatMessage] = useState(null); // { ok, text }
+
+  const categoryNames = [...new Set(bucketMap.map(r => r.category))].sort((a, b) => a.localeCompare(b));
+  const effectiveCategory = addCategory === NEW_CATEGORY_OPTION ? newCategoryName.trim() : addCategory;
+
+  const handleAddEntry = async () => {
+    const result = await addCategoryEntry(effectiveCategory, newSubcategory, addBucket);
+    setCatMessage({ ok: result.ok, text: result.message });
+    if (result.ok) {
+      setNewSubcategory('');
+      if (addCategory === NEW_CATEGORY_OPTION) {
+        // Switch the picker to the category we just created.
+        setAddCategory(effectiveCategory);
+        setNewCategoryName('');
+      }
+    }
+  };
+
+  const handleRemoveEntry = async (category, subcategory) => {
+    const ok = window.confirm(
+      `Remove "${subcategory}" from ${category}?\n\n` +
+      'Your past transactions keep their category exactly as they are. ' +
+      'It will only stop appearing when you add NEW transactions.'
+    );
+    if (!ok) return;
+    const result = await removeCategoryEntry(category, subcategory);
+    setCatMessage({ ok: result.ok, text: result.message });
+  };
+
+  const handleRemoveCategory = async (category, count) => {
+    const ok = window.confirm(
+      `Remove the whole "${category}" category (${count} subcategories)?\n\n` +
+      'Your past transactions keep their category exactly as they are. ' +
+      'It will only stop appearing when you add NEW transactions.'
+    );
+    if (!ok) return;
+    const result = await removeWholeCategory(category);
+    setCatMessage({ ok: result.ok, text: result.message });
+  };
+
+  const handleBackup = async () => {
+    try {
+      const counts = await downloadBackup();
+      setBackupMsg(
+        `Backup saved: ${counts.transactions} transactions, ${counts.loans} loans, ` +
+        `${counts.bucket_map} bucket rules, ${counts.settings} settings. Check your Downloads folder.`
+      );
+    } catch (err) {
+      console.error('Backup failed:', err);
+      setBackupMsg('Backup failed: ' + (err.message || err));
+    }
+  };
 
   const [zakatInputs, setZakatInputs] = useState({
     debt_receivable: settings.debt_receivable || 0,
@@ -3227,6 +3595,7 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
     await updateSetting('discretionary_pct', parseFloat(localRates.discretionary_pct) || 10);
     await updateSetting('financial_pct', parseFloat(localRates.financial_pct) || 15);
     await updateSetting('savings_pct', parseFloat(localRates.savings_pct) || 35);
+    await updateSetting('budget_pulse_include_historical', budgetPulseHist);
     alert('General settings saved!');
   };
 
@@ -3307,38 +3676,159 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
                 </div>
               </div>
 
+              <label className="flex items-start gap-2 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={budgetPulseHist}
+                  onChange={(e) => setBudgetPulseHist(e.target.checked)}
+                  className="accent-blue-600 mt-0.5"
+                />
+                <span>
+                  Include imported historical entries in Insights → Budget Pulse
+                  <span className="block text-xs text-gray-400">Off by default. Turn on to see budget usage for past months.</span>
+                </span>
+              </label>
+
               <button onClick={saveGeneral} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition">Save General Settings</button>
+
+              <div className="border-t border-gray-100 pt-4">
+                <label className="text-xs font-semibold text-gray-500 mb-1 block">Backup</label>
+                <p className="text-xs text-gray-400 mb-2">
+                  Saves all your data to a file on this device. Do this now and then, and before anything risky.
+                </p>
+                <button onClick={handleBackup} className="w-full bg-gray-100 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-200 transition">
+                  Download Backup (.json)
+                </button>
+                {backupMsg && <div className="text-xs text-gray-600 mt-2">{backupMsg}</div>}
+              </div>
             </div>
           )}
 
           {activeTab === 'buckets' && (
             <div>
+              {/* ---------- Add a category / subcategory ---------- */}
+              <div className="bg-blue-50 rounded-lg p-3 mb-4 space-y-2">
+                <div className="text-xs font-semibold text-blue-700">Add a category or subcategory</div>
+
+                <CustomSelect
+                  value={addCategory}
+                  onChange={setAddCategory}
+                  options={[...categoryNames, NEW_CATEGORY_OPTION]}
+                  placeholder="Choose a category"
+                  required={false}
+                />
+
+                {addCategory === NEW_CATEGORY_OPTION && (
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    placeholder="New category name"
+                    className="w-full p-2 bg-white rounded-lg border border-gray-200 text-sm"
+                  />
+                )}
+
+                <input
+                  type="text"
+                  value={newSubcategory}
+                  onChange={(e) => setNewSubcategory(e.target.value)}
+                  placeholder="Subcategory name"
+                  className="w-full p-2 bg-white rounded-lg border border-gray-200 text-sm"
+                />
+
+                {effectiveCategory === 'Income' ? (
+                  <div className="text-xs text-gray-500">Bucket: Income (set automatically)</div>
+                ) : (
+                  <div>
+                    <div className="text-[11px] text-gray-500 mb-1">Bucket for this subcategory</div>
+                    <BucketDropdown currentValue={addBucket} onSelect={setAddBucket} />
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleAddEntry}
+                  disabled={!effectiveCategory || !newSubcategory.trim()}
+                  className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-1 disabled:opacity-50"
+                >
+                  <Plus size={16} /> Add
+                </button>
+
+                {catMessage && (
+                  <div className={`text-xs ${catMessage.ok ? 'text-green-700' : 'text-red-600'}`}>
+                    {catMessage.text}
+                  </div>
+                )}
+              </div>
+
+              {/* ---------- Search ---------- */}
               <div className="relative mb-4">
                 <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search category or subcategory..." className="w-full p-3 pl-10 bg-gray-50 rounded-lg border border-gray-200" />
               </div>
 
-              <div className="space-y-2 max-h-96 overflow-y-auto">
+              {/* ---------- Grouped list ---------- */}
+              <div className="space-y-4 max-h-96 overflow-y-auto">
                 {filteredMap.length === 0 ? (
                   <div className="text-center p-4 text-gray-400 text-sm">No matches.</div>
                 ) : (
-                  filteredMap.map((row) => (
-                    <div key={row.id} className="flex flex-col gap-2 bg-gray-50 p-3 rounded-lg">
-                      <div className="min-w-0">
-                        <div className="text-xs text-gray-400">{row.category}</div>
-                        <div className="text-sm font-semibold text-gray-700 truncate">{row.subcategory}</div>
-                      </div>
-                      <BucketDropdown 
-                        currentValue={row.bucket}
-                        onSelect={(newBucket) => updateBucketFor(row.category, row.subcategory, newBucket)}
-                      />
-                    </div>
-                  ))
+                  [...new Set(filteredMap.map(r => r.category))]
+                    .sort((a, b) => a.localeCompare(b))
+                    .map(cat => {
+                      const rows = filteredMap.filter(r => r.category === cat);
+                      const totalInCategory = bucketMap.filter(r => r.category === cat).length;
+                      return (
+                        <div key={cat}>
+                          <div className="flex items-center justify-between mb-1 px-1">
+                            <div className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+                              {cat} <span className="font-normal text-gray-400">({totalInCategory})</span>
+                            </div>
+                            {!isProtectedCategory(cat) && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveCategory(cat, totalInCategory)}
+                                className="text-gray-400 hover:text-red-600 p-1"
+                                title={`Remove the ${cat} category`}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="space-y-2">
+                            {rows.map((row) => (
+                              <div key={row.id} className="flex flex-col gap-2 bg-gray-50 p-3 rounded-lg">
+                                <div className="flex items-center justify-between gap-2 min-w-0">
+                                  <div className="text-sm font-semibold text-gray-700 truncate">{row.subcategory}</div>
+                                  {isProtectedEntry(row.category, row.subcategory) ? (
+                                    <span className="text-[10px] text-gray-400 flex-shrink-0">used by app</span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveEntry(row.category, row.subcategory)}
+                                      className="text-gray-400 hover:text-red-600 p-1 flex-shrink-0"
+                                      title={`Remove ${row.subcategory}`}
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                                <BucketDropdown
+                                  currentValue={row.bucket}
+                                  onSelect={(newBucket) => updateBucketFor(row.category, row.subcategory, newBucket)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })
                 )}
               </div>
 
               <p className="text-xs text-gray-400 mt-3 text-center">
-                Changes apply only to <strong>future</strong> transactions.
+                Bucket changes apply only to <strong>future</strong> transactions.
+                Removing a category never changes past transactions.
               </p>
             </div>
           )}
@@ -3349,6 +3839,19 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
                 <strong>Zakat Formula:</strong> (Bank Balance − Debt Payable + Debt Receivable) × 2.5%<br/>
                 <strong>Eligible if:</strong> Bank Balance {'>'} Last Year Same Month OR Bank Balance {'>'} Nisab
               </div>
+
+              <label className="flex items-start gap-2 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={settings.balance_reminder_enabled !== false}
+                  onChange={(e) => updateSetting('balance_reminder_enabled', e.target.checked)}
+                  className="accent-blue-600 mt-0.5"
+                />
+                <span>
+                  Remind me to enter my bank balance on the last day of each month
+                  <span className="block text-xs text-gray-400">If the app isn't opened that day, the reminder appears the next time you open it.</span>
+                </span>
+              </label>
 
               <div className="min-w-0">
                 <label className="text-xs font-semibold text-gray-500 mb-1 block">Debt Receivable (MVR)</label>
@@ -3415,6 +3918,95 @@ export function SettingsModal({ onClose, settings, updateSetting, bucketMap, upd
       )}
     </>
   );
+}
+
+
+================================================================================
+FILE: src/components/SyncStatus.jsx
+PATH: /home/iburu/finance-erp/src/components/SyncStatus.jsx
+SIZE: 2860 bytes    LINES: 81
+================================================================================
+
+import { useState, useEffect } from 'react';
+import { liveQuery } from 'dexie';
+import { db } from '../db/database';
+import { getLastOkSync, SYNC_EVENT } from '../lib/sync';
+
+const TABLES = ['transactions', 'settings', 'loans', 'bucket_map'];
+
+function timeAgo(iso) {
+  if (!iso) return 'not yet';
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 45) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+/**
+ * A small status line: "Synced 2 min ago" or "3 changes waiting to upload".
+ * It only displays information; it never starts a sync itself.
+ */
+export function SyncStatus() {
+  const [pending, setPending] = useState(0);
+  const [lastOk, setLastOk] = useState(getLastOkSync());
+  const [lastError, setLastError] = useState(null);
+  const [online, setOnline] = useState(navigator.onLine);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const sub = liveQuery(async () => {
+      let total = 0;
+      for (const t of TABLES) {
+        total += await db.table(t).where('syncStatus').equals('pending').count();
+      }
+      return total;
+    }).subscribe({ next: setPending, error: () => {} });
+
+    const onSync = (e) => {
+      setLastOk(getLastOkSync());
+      setLastError(e.detail && !e.detail.ok ? e.detail.error : null);
+    };
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+
+    window.addEventListener(SYNC_EVENT, onSync);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    // Refresh the "x min ago" wording every 30 seconds.
+    const timer = setInterval(() => setTick(n => n + 1), 30000);
+
+    return () => {
+      sub.unsubscribe();
+      window.removeEventListener(SYNC_EVENT, onSync);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      clearInterval(timer);
+    };
+  }, []);
+
+  let text;
+  let color = 'text-gray-400';
+
+  if (!online) {
+    text = pending > 0
+      ? `Offline • ${pending} change${pending === 1 ? '' : 's'} saved on this device, will upload when you're back online`
+      : 'Offline • changes will upload when you reconnect';
+    color = 'text-orange-500';
+  } else if (lastError) {
+    text = `Last sync had a problem: ${lastError}`;
+    color = 'text-red-500';
+  } else if (pending > 0) {
+    text = `${pending} change${pending === 1 ? '' : 's'} waiting to upload • last synced ${timeAgo(lastOk)}`;
+    color = 'text-orange-500';
+  } else {
+    text = `Synced ${timeAgo(lastOk)}`;
+    color = 'text-green-600';
+  }
+
+  return <div className={`text-[11px] truncate ${color}`}>{text}</div>;
 }
 
 ================================================================================
@@ -3827,6 +4419,219 @@ db.version(202).stores({
     if (!item.uuid) item.uuid = uuidv4();
     item.syncStatus = 'pending';
   });
+});
+
+const DEFAULT_BUCKET_MAP = [
+  // Personal
+  { category: 'Personal', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Medical', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Tickets', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Transportation', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Grocery', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Samu', bucket: 'Essential' },
+  { category: 'Personal', subcategory: 'Book', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Wardrobe', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Clothing', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Cosmetics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Donation', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Electronics', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Games', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Online Shopping', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Other', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'PC / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Phone / Accessory', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Restaurant', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Room Rent', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Snacks', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Software', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Staff Shop', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Subscription', bucket: 'Discretionary' },
+  { category: 'Personal', subcategory: 'Debt', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Pension', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Zakat', bucket: 'Financial/Obligatory' },
+  { category: 'Personal', subcategory: 'Loan Repayment', bucket: 'Financial/Obligatory' },
+  // Family
+  { category: 'Family', subcategory: 'Mamma', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bappa', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Dhattha', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Aisu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ahammadhu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Ali', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Bro', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Faatthu', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Combined', bucket: 'Discretionary' },
+  { category: 'Family', subcategory: 'Rent', bucket: 'Essential' },
+  { category: 'Family', subcategory: 'Tickets', bucket: 'Essential' },
+  // Boalhadhadige
+  { category: 'Boalhadhadige', subcategory: 'General', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Water', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Electricity', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Food', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Bills', bucket: 'Essential' },
+  { category: 'Boalhadhadige', subcategory: 'Furniture', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Wiring', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Doors', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Tiles', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cements/Building', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Appliances', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Maintenance', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Phone/Internet', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Waste mngmnt.', bucket: 'Discretionary' },
+  { category: 'Boalhadhadige', subcategory: 'Cleaning Goods', bucket: 'Discretionary' },
+  // Income
+  { category: 'Income', subcategory: 'Salary/Wages', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Service charge', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Misc.', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Ramadan Bonus', bucket: 'Income' },
+  { category: 'Income', subcategory: 'Yearly Bonus', bucket: 'Income' }
+];
+
+// A fixed "namespace" so the same input always produces the same UUID.
+// This is what lets two devices seed the SAME rows with the SAME ids,
+// so the cloud sees them as one row instead of two.
+const SEED_NAMESPACE = '6f1c2b4e-8a3d-4c5e-9b7a-1d2e3f4a5b6c';
+
+export const stableUuid = (label) => uuidv5(label, SEED_NAMESPACE);
+
+let initPromise = null;
+
+export const initSettings = () => {
+  // If this is called twice at the same moment, both callers share one run.
+  if (!initPromise) {
+    initPromise = runInit().finally(() => { initPromise = null; });
+  }
+  return initPromise;
+};
+
+async function runInit() {
+  const nowISO = new Date().toISOString();
+
+  const settingsCount = await db.settings.count();
+  if (settingsCount === 0) {
+    const defaults = [
+      { key: 'essential_pct', value: 40 }, { key: 'discretionary_pct', value: 10 },
+      { key: 'financial_pct', value: 15 }, { key: 'savings_pct', value: 35 },
+      { key: 'nisab_threshold', value: 10000 }, { key: 'zakat_rate', value: 2.5 },
+      { key: 'current_usd_rate', value: 15.42 }, { key: 'debt_receivable', value: 0 },
+      { key: 'bank_balance_override', value: '' }, { key: 'prev_year_balances', value: {} }
+    ];
+    await db.settings.bulkPut(defaults.map(d => ({
+      ...d,
+      uuid: stableUuid('setting|' + d.key),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
+    })));
+  }
+
+  const mapCount = await db.bucket_map.count();
+  if (mapCount === 0) {
+    await db.bucket_map.bulkAdd(DEFAULT_BUCKET_MAP.map(b => ({
+      ...b,
+      uuid: stableUuid('bucket|' + b.category + '|' + b.subcategory),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
+    })));
+  }
+
+  // Seed the historical rows only if this device has none at all.
+  // (Old code checked "is the transactions table empty?", which is wrong now
+  // that live transactions can arrive from the cloud before seeding runs.)
+  const historicalCount = await db.transactions
+    .filter(t => t.is_historical === true)
+    .count();
+
+  if (historicalCount === 0 && SEED_DATA.length > 0) {
+    await db.transactions.bulkAdd(SEED_DATA.map((t, index) => ({
+      ...t,
+      uuid: stableUuid('seed-tx|' + index),
+      syncStatus: 'pending',
+      updated_at: nowISO,
+      deleted: false
+    })));
+  }
+}
+
+================================================================================
+FILE: src/db/database.with-unique-index.js
+PATH: /home/iburu/finance-erp/src/db/database.with-unique-index.js
+SIZE: 9974 bytes    LINES: 206
+================================================================================
+
+import Dexie from 'dexie';
+import { SEED_DATA } from './seedData';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+
+export const db = new Dexie('FinanceERP');
+
+db.version(202).stores({
+  transactions: '++id, uuid, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
+  settings: 'key, uuid, syncStatus, updated_at, deleted',
+  loans: '++id, uuid, name, total_amount, start_date, notes, syncStatus, updated_at, deleted',
+  loan_payments: '++id, loan_id, date, amount, transaction_id',
+  zakat_log: '++id, month, total_savings, zakat_due, zakat_paid',
+  exchange_rates: '++id, date_set, rate',
+  bucket_map: '++id, uuid, category, subcategory, bucket, syncStatus, updated_at, deleted'
+}).upgrade(async tx => {
+  const addUuids = async (tableName) => {
+    await tx.table(tableName).toCollection().modify(item => {
+      if (!item.uuid) item.uuid = uuidv4();
+      item.syncStatus = 'pending';
+    });
+  };
+  await addUuids('transactions');
+  await addUuids('loans');
+  await addUuids('bucket_map');
+  
+  await tx.table('settings').toCollection().modify(item => {
+    if (!item.uuid) item.uuid = uuidv4();
+    item.syncStatus = 'pending';
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OPTIONAL HARDENING (versions 203 + 204): make duplicate uuids impossible.
+//
+// Version 203 first removes any rows that share a uuid (keeping the newest).
+// Version 204 then adds the "unique" rule. They are two separate steps on purpose:
+// the browser refuses to add a unique rule while duplicates still exist, so the
+// clean-up has to happen first.
+// ---------------------------------------------------------------------------
+db.version(203).stores({}).upgrade(async tx => {
+  for (const tableName of ['transactions', 'loans', 'bucket_map']) {
+    const rows = await tx.table(tableName).toArray();
+    const keep = new Map();
+    const remove = [];
+
+    for (const row of rows) {
+      if (!row.uuid) continue; // rows without a uuid are ignored by a unique index
+      const prev = keep.get(row.uuid);
+      if (!prev) {
+        keep.set(row.uuid, row);
+        continue;
+      }
+      const prevTime = new Date(prev.updated_at || 0).getTime();
+      const thisTime = new Date(row.updated_at || 0).getTime();
+      if (thisTime > prevTime) {
+        remove.push(prev.id);
+        keep.set(row.uuid, row);
+      } else {
+        remove.push(row.id);
+      }
+    }
+
+    if (remove.length > 0) {
+      await tx.table(tableName).bulkDelete(remove);
+    }
+  }
+});
+
+db.version(204).stores({
+  transactions: '++id, &uuid, date, category, subcategory, amount_original, currency, exchange_rate_at_time, amount_mvr, type, is_historical, notes, syncStatus, updated_at, deleted',
+  loans: '++id, &uuid, name, total_amount, start_date, notes, syncStatus, updated_at, deleted',
+  bucket_map: '++id, &uuid, category, subcategory, bucket, syncStatus, updated_at, deleted'
 });
 
 const DEFAULT_BUCKET_MAP = [
@@ -37211,7 +38016,7 @@ export const supabase = createClient(supabaseUrl || '', supabaseAnonKey || '');
 ================================================================================
 FILE: src/lib/sync.js
 PATH: /home/iburu/finance-erp/src/lib/sync.js
-SIZE: 9690 bytes    LINES: 295
+SIZE: 11997 bytes    LINES: 345
 ================================================================================
 
 import { supabase } from './supabaseClient';
@@ -37220,6 +38025,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 const LAST_SYNC_KEY = 'finance_erp_last_sync';
 const EPOCH_KEY = 'finance_erp_sync_epoch';
+const LAST_OK_KEY = 'finance_erp_last_ok_sync';
+export const SYNC_EVENT = 'finance-sync-finished';
 // Bump this string whenever you want every device to do a full clean re-download.
 const SYNC_EPOCH = 'v7-dedupe-fix';
 
@@ -37235,6 +38042,13 @@ const UUID_TABLES = ['transactions', 'loans', 'bucket_map'];
 
 export const getLastSync = () => localStorage.getItem(LAST_SYNC_KEY);
 export const setLastSync = (isoString) => localStorage.setItem(LAST_SYNC_KEY, isoString);
+export const getLastOkSync = () => localStorage.getItem(LAST_OK_KEY);
+
+// Tells the rest of the app (the "Synced 2 min ago" line) that a sync just finished.
+function announceSync(ok, error) {
+  if (ok) localStorage.setItem(LAST_OK_KEY, new Date().toISOString());
+  window.dispatchEvent(new CustomEvent(SYNC_EVENT, { detail: { ok, error: error || null } }));
+}
 
 async function fetchAllRows(table, userId, sinceISO) {
   const allRows = [];
@@ -37318,7 +38132,11 @@ async function cleanupLocal() {
   }
 }
 
-export async function pushChanges() {
+/**
+ * liveOnly = true uploads ONLY things you typed in yourself (live transactions
+ * and loans). Used as a safety step before a device replaces its local data.
+ */
+export async function pushChanges({ liveOnly = false } = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session) return false;
 
@@ -37326,7 +38144,11 @@ export async function pushChanges() {
   let allSuccessful = true;
 
   for (const table of TABLES) {
-    const pending = await db.table(table).where('syncStatus').equals('pending').toArray();
+    let pending = await db.table(table).where('syncStatus').equals('pending').toArray();
+    if (liveOnly) {
+      if (table === 'transactions') pending = pending.filter(r => !r.is_historical);
+      else if (table !== 'loans') continue;
+    }
     if (pending.length === 0) continue;
 
     const toPush = pending.map(row => {
@@ -37389,6 +38211,19 @@ export async function pullChanges(isFirstSync = false) {
     fetched[table] = await fetchAllRows(table, session.user.id, sinceISO);
   }
 
+  // Safety stop: never replace this device's data with a cloud answer that
+  // looks wrong (empty, or far smaller than what this device already holds).
+  if (isFirstSync) {
+    const localSynced = await db.transactions.where('syncStatus').equals('synced').count();
+    const cloudCount = fetched.transactions.length;
+    if (cloudCount === 0 || (localSynced > 100 && cloudCount < localSynced * 0.5)) {
+      throw new Error(
+        `Safety stop: the cloud returned ${cloudCount} transactions but this device has ${localSynced}. ` +
+        'Your local data was NOT replaced. Download a backup in Settings, then try again.'
+      );
+    }
+  }
+
   // Step 2: write into the local database, one table at a time, all-or-nothing.
   for (const table of TABLES) {
     const rows = fetched[table];
@@ -37436,9 +38271,10 @@ export async function pullChanges(isFirstSync = false) {
   setLastSync(pullStartedAt);
 }
 
+// Returns true (all good), false (finished but some changes didn't upload), or null (not signed in).
 async function runSync() {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return;
+  if (!session) return null;
 
   // One-time reset after this fix is deployed: forget the old sync marker
   // so this device does one clean full download.
@@ -37470,6 +38306,14 @@ async function runSync() {
       setLastSync(new Date().toISOString());
     } else {
       // Cloud has data: wipe local and take the cloud's copy.
+      // Safety first: upload anything you typed in that hasn't reached the cloud yet,
+      // otherwise the wipe below would delete it. If this upload fails, stop.
+      const savedLive = await pushChanges({ liveOnly: true });
+      if (!savedLive) {
+        throw new Error(
+          'This device has entries that could not be uploaded, so it was not reset. Check your connection and try again.'
+        );
+      }
       await pullChanges(true);
       // Make sure historical seed rows exist (same ids on every device),
       // then upload anything new.
@@ -37478,7 +38322,7 @@ async function runSync() {
     }
 
     localStorage.setItem(EPOCH_KEY, SYNC_EPOCH);
-    return;
+    return true;
   }
 
   // Normal sync: push first. If the push fails, do NOT pull.
@@ -37488,6 +38332,7 @@ async function runSync() {
   } else {
     console.warn('Push failed. Skipping pull so local edits are not overwritten.');
   }
+  return pushOk;
 }
 
 let runningSync = null;
@@ -37506,7 +38351,17 @@ export function syncAll() {
     ? navigator.locks.request('finance-erp-sync', task)
     : task();
 
-  runningSync = Promise.resolve(wrapped).finally(() => { runningSync = null; });
+  runningSync = Promise.resolve(wrapped)
+    .then((result) => {
+      if (result === true) announceSync(true);
+      else if (result === false) announceSync(false, 'Some changes could not be uploaded. Will retry.');
+      return result;
+    })
+    .catch((err) => {
+      announceSync(false, err.message || String(err));
+      throw err;
+    })
+    .finally(() => { runningSync = null; });
   return runningSync;
 }
 
@@ -37559,16 +38414,58 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 ================================================================================
 FILE: src/store/useStore.js
 PATH: /home/iburu/finance-erp/src/store/useStore.js
-SIZE: 18658 bytes    LINES: 582
+SIZE: 25626 bytes    LINES: 743
 ================================================================================
 
+
 import { create } from 'zustand';
-import { db } from '../db/database';
+import { db, stableUuid } from '../db/database';
 import { v4 as uuidv4 } from 'uuid';
+
+// Category entries the app's own logic depends on. They can be re-bucketed but not removed:
+//  - the whole "Income" category (the Income tab of Add Transaction needs it)
+//  - the whole "Personal" category (the default category)
+//  - Personal > Zakat       (used by the zakat card and "Mark Paid")
+//  - Personal > Loan Repayment (links repayments to loans)
+export function isProtectedCategory(category) {
+  return category === 'Income' || category === 'Personal';
+}
+export function isProtectedEntry(category, subcategory) {
+  if (category === 'Personal' && (subcategory === 'Zakat' || subcategory === 'Loan Repayment')) return true;
+  return false;
+}
 
 // The year your saved "Previous Year Monthly Balances" grid belongs to.
 // (Entered in Oct 2026 as last year's month-end balances, so 2025.)
 const PREV_BALANCES_YEAR = 2025;
+
+// ---- Automatic loan deduction for Family > Bappa ----
+// An expense under Family > Bappa ABOVE this amount (in MVR) is counted as a payment
+// towards the loan named "Dad". The transaction itself is the payment: it is simply
+// linked to that loan, so no second "Loan Repayment" transaction is created.
+// Anything at or below this amount is an ordinary expense and is not linked to a loan.
+export const BAPPA_LOAN_THRESHOLD = 1100;
+const BAPPA_LOAN_NAME = 'dad';
+
+// True if this transaction is the kind that may be deducted from the Dad loan.
+export function isBappaExpense(t) {
+  return !!t && t.type === 'Expense' && t.category === 'Family' && t.subcategory === 'Bappa';
+}
+
+// The loan named "Dad" (ignores capitals and extra spaces; ignores deleted loans).
+export function findDadLoan(loans) {
+  return (loans || []).find(
+    l => l.deleted !== true && String(l.name || '').trim().toLowerCase() === BAPPA_LOAN_NAME
+  );
+}
+
+// Which loan (uuid) should this transaction be linked to? Returns null if none.
+// `amountMvr` is the transaction amount already converted to MVR.
+export function autoLoanUuidFor(t, amountMvr, loans) {
+  if (!isBappaExpense(t)) return null;
+  if (!(Number(amountMvr) > BAPPA_LOAN_THRESHOLD)) return null;
+  return findDadLoan(loans)?.uuid || null;
+}
 
 export const useStore = create((set, get) => ({
   transactions: [],
@@ -37600,9 +38497,12 @@ export const useStore = create((set, get) => ({
     const { settings } = get();
     if (JSON.stringify(settings[key]) === JSON.stringify(value)) return;
 
+    // Keep the row's existing uuid (or make a stable one) so it never loses its cloud id.
+    const existingRow = await db.settings.get(key);
     await db.settings.put({
       key,
       value,
+      uuid: existingRow?.uuid || stableUuid('setting|' + key),
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
       deleted: false,
@@ -37657,11 +38557,115 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // ---- Add / remove categories and subcategories ----
+  // Removing only hides an entry from the dropdowns for NEW transactions.
+  // Old transactions keep their own category, subcategory and bucket as plain text,
+  // so nothing about past data changes.
+  addCategoryEntry: async (categoryInput, subcategoryInput, bucket) => {
+    const clean = (v) => String(v || '').replace(/\s+/g, ' ').trim();
+    let category = clean(categoryInput);
+    const subcategory = clean(subcategoryInput);
+    if (!category || !subcategory) {
+      return { ok: false, message: 'Please enter both a category and a subcategory.' };
+    }
+
+    const allRows = await db.bucket_map.toArray();
+
+    // If the category already exists in a different capitalisation, reuse that spelling.
+    const sameCategory = allRows.find(
+      r => r.category.toLowerCase() === category.toLowerCase()
+    );
+    if (sameCategory) category = sameCategory.category;
+
+    const finalBucket = category === 'Income' ? 'Income' : (bucket || 'Discretionary');
+    const now = new Date().toISOString();
+
+    const match = allRows.find(
+      r =>
+        r.category === category &&
+        r.subcategory.toLowerCase() === subcategory.toLowerCase()
+    );
+
+    if (match && match.deleted !== true) {
+      return { ok: false, message: `"${match.subcategory}" already exists under ${category}.` };
+    }
+
+    if (match) {
+      // It was removed earlier: bring the same row back instead of making a second one.
+      await db.bucket_map.update(match.id, {
+        subcategory,
+        bucket: finalBucket,
+        deleted: false,
+        syncStatus: 'pending',
+        updated_at: now,
+      });
+    } else {
+      await db.bucket_map.add({
+        category,
+        subcategory,
+        bucket: finalBucket,
+        uuid: uuidv4(),
+        syncStatus: 'pending',
+        updated_at: now,
+        deleted: false,
+      });
+    }
+
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Added "${subcategory}" to ${category}.` };
+  },
+
+  removeCategoryEntry: async (category, subcategory) => {
+    if (category === 'Income') {
+      // Add Transaction needs at least one income subcategory to exist.
+      const incomeLeft = get().bucketMap.filter(r => r.category === 'Income').length;
+      if (incomeLeft <= 1) {
+        return { ok: false, message: 'Keep at least one Income subcategory so you can still record income.' };
+      }
+    }
+    if (isProtectedEntry(category, subcategory)) {
+      return { ok: false, message: `"${subcategory}" is used by zakat/loan features and can't be removed.` };
+    }
+    const now = new Date().toISOString();
+    const rows = await db.bucket_map
+      .filter(r => r.category === category && r.subcategory === subcategory && r.deleted !== true)
+      .toArray();
+    for (const r of rows) {
+      await db.bucket_map.update(r.id, { deleted: true, syncStatus: 'pending', updated_at: now });
+    }
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Removed "${subcategory}" from ${category}.` };
+  },
+
+  removeWholeCategory: async (category) => {
+    if (isProtectedCategory(category)) {
+      return { ok: false, message: `The "${category}" category is required by the app and can't be removed.` };
+    }
+    const rows = await db.bucket_map
+      .filter(r => r.category === category && r.deleted !== true)
+      .toArray();
+    if (rows.some(r => isProtectedEntry(r.category, r.subcategory))) {
+      return { ok: false, message: 'This category contains entries the app needs and can\'t be removed.' };
+    }
+    const now = new Date().toISOString();
+    for (const r of rows) {
+      await db.bucket_map.update(r.id, { deleted: true, syncStatus: 'pending', updated_at: now });
+    }
+    const bucketMap = await db.bucket_map.filter(b => b.deleted !== true).toArray();
+    set({ bucketMap });
+    return { ok: true, message: `Removed the "${category}" category (${rows.length} subcategories).` };
+  },
+
   getSubcategoriesFor: (category) => {
     const { bucketMap } = get();
-    return bucketMap
-      .filter(r => r.category === category && r.deleted !== true)
-      .map(r => r.subcategory);
+    // De-duplicated so a repeated bucket-map row can't show the same option twice.
+    return [...new Set(
+      bucketMap
+        .filter(r => r.category === category && r.deleted !== true)
+        .map(r => r.subcategory)
+    )];
   },
 
   getCategories: () => {
@@ -37760,8 +38764,12 @@ export const useStore = create((set, get) => ({
       amount_mvr = transactionData.amount_original * currentRate;
     }
 
+    // Family > Bappa expenses above the threshold are deducted from the "Dad" loan.
+    const autoLoan = autoLoanUuidFor(transactionData, amount_mvr, get().loans);
+
     const newTransaction = {
       ...transactionData,
+      ...(isBappaExpense(transactionData) ? { loan_uuid: autoLoan } : {}),
       amount_mvr,
       exchange_rate_at_time: currentRate,
       is_historical: false,
@@ -37806,6 +38814,13 @@ export const useStore = create((set, get) => ({
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
     };
+
+    // Re-check the Family > Bappa loan rule whenever such a transaction is saved, so
+    // editing the amount (or moving it in/out of Bappa) keeps the Dad loan correct.
+    // Other transactions (e.g. normal Loan Repayments) are left exactly as they were.
+    if (isBappaExpense(updated)) {
+      updated.loan_uuid = autoLoanUuidFor(updated, amount_mvr, get().loans);
+    }
 
     await db.transactions.put(updated);
 
@@ -38144,6 +39159,55 @@ export const useStore = create((set, get) => ({
       .sort((a, b) => b.total - a.total);
   },
 }));
+
+
+================================================================================
+FILE: src/utils/backup.js
+PATH: /home/iburu/finance-erp/src/utils/backup.js
+SIZE: 1254 bytes    LINES: 41
+================================================================================
+
+import { db } from '../db/database';
+
+/**
+ * Saves a copy of ALL your data (transactions, settings, loans, bucket map)
+ * into one .json file and downloads it to this device.
+ * Returns how many rows of each kind were saved.
+ */
+export async function downloadBackup() {
+  const [transactions, settings, loans, bucket_map] = await Promise.all([
+    db.transactions.toArray(),
+    db.settings.toArray(),
+    db.loans.toArray(),
+    db.bucket_map.toArray(),
+  ]);
+
+  const backup = {
+    app: 'finance-erp',
+    format_version: 1,
+    exported_at: new Date().toISOString(),
+    counts: {
+      transactions: transactions.length,
+      settings: settings.length,
+      loans: loans.length,
+      bucket_map: bucket_map.length,
+    },
+    tables: { transactions, settings, loans, bucket_map },
+  };
+
+  const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 10);
+  link.href = url;
+  link.download = `finance-erp-backup-${stamp}.json`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+  return backup.counts;
+}
 
 ================================================================================
 FILE: src/utils/exportExcel.js

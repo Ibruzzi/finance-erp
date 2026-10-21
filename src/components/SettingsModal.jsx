@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { X, Search, ChevronLeft, ChevronRight, Trash2, Plus } from 'lucide-react';
 import { BucketDropdown } from './BucketDropdown';
@@ -370,6 +371,19 @@ export function SettingsModal({
                 <strong>Eligible if:</strong> Bank Balance {'>'} Last Year Same Month OR Bank Balance {'>'} Nisab
               </div>
 
+              <label className="flex items-start gap-2 text-sm text-gray-700 bg-gray-50 p-3 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={settings.balance_reminder_enabled !== false}
+                  onChange={(e) => updateSetting('balance_reminder_enabled', e.target.checked)}
+                  className="accent-blue-600 mt-0.5"
+                />
+                <span>
+                  Remind me to enter my bank balance on the last day of each month
+                  <span className="block text-xs text-gray-400">If the app isn't opened that day, the reminder appears the next time you open it.</span>
+                </span>
+              </label>
+
               <div className="min-w-0">
                 <label className="text-xs font-semibold text-gray-500 mb-1 block">Debt Receivable (MVR)</label>
                 <input type="number" step="0.01" value={zakatInputs.debt_receivable} onChange={(e) => handleZakatInputChange('debt_receivable', e.target.value)} className="w-full p-2 bg-gray-50 rounded-lg border border-gray-200" placeholder="Money others owe you" />
@@ -436,3 +450,4 @@ export function SettingsModal({
     </>
   );
 }
+

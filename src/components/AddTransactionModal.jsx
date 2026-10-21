@@ -1,6 +1,8 @@
+
 import { useState } from 'react';
 import { X, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import { CustomSelect } from './CustomSelect';
+import { autoLoanUuidFor, findDadLoan, isBappaExpense, BAPPA_LOAN_THRESHOLD } from '../store/useStore';
 
 export function AddTransactionModal({
   onClose,
@@ -60,6 +62,15 @@ export function AddTransactionModal({
     : getBucketFromMap(category, subcategory);
   const isLoanRepayment =
     !isIncome && category === 'Personal' && subcategory === 'Loan Repayment';
+
+  // Family > Bappa above the threshold is deducted from the "Dad" loan automatically.
+  const amountMvrPreview =
+    (parseFloat(amount) || 0) *
+    (currency === 'USD' ? (initialData?.exchange_rate_at_time || settings.current_usd_rate || 15.42) : 1);
+  const bappaCandidate = isBappaExpense({ type, category, subcategory });
+  const bappaOverThreshold = bappaCandidate && amountMvrPreview > BAPPA_LOAN_THRESHOLD;
+  const dadLoan = findDadLoan(loans);
+  const willDeductFromDad = !!autoLoanUuidFor({ type, category, subcategory }, amountMvrPreview, loans);
 
   const handleTypeChange = (newType) => {
     setType(newType);
@@ -235,6 +246,18 @@ export function AddTransactionModal({
             </div>
           )}
 
+          {bappaOverThreshold && (
+            willDeductFromDad ? (
+              <div className="p-3 rounded-lg text-xs bg-green-50 text-green-700 border border-green-200">
+                This will also be deducted from the loan <strong>{dadLoan?.name}</strong> (no separate repayment is recorded).
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg text-xs bg-amber-50 text-amber-700 border border-amber-200">
+                No loan named "Dad" was found, so this will be saved as a normal expense. Add a loan called Dad (Loans button) to have amounts above RF {BAPPA_LOAN_THRESHOLD} deducted from it.
+              </div>
+            )
+          )}
+
           <div>
             <label className="text-xs font-semibold text-gray-500 mb-1 block">
               Notes (Optional)
@@ -259,3 +282,4 @@ export function AddTransactionModal({
     </div>
   );
 }
+

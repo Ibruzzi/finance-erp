@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from 'react';
 import { useStore } from './store/useStore';
 import { initSettings } from './db/database';
@@ -21,6 +22,8 @@ import { SettingsModal } from './components/SettingsModal';
 import { YearlySummary } from './components/YearlySummary';
 import { RangeReport } from './components/RangeReport';
 import { InsightsTab } from './components/InsightsTab';
+import { BalanceReminderModal } from './components/BalanceReminderModal';
+import { getDueReminderMonths } from './utils/balanceReminder';
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -47,9 +50,27 @@ function MainApp() {
   const [includeHistorical, setIncludeHistorical] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // ---- Month-end bank balance reminder ----
+  // `now` is refreshed when the app is reopened/refocused and every 30 minutes, so the
+  // reminder appears on the last day of the month (or the next time the app is opened).
+  const [now, setNow] = useState(() => new Date());
+  // Months the user pressed "Remind me later" for: hidden until the app is reopened.
+  const [snoozedMonths, setSnoozedMonths] = useState([]);
+
   useEffect(() => {
     initSettings().then(() => loadData());
   }, [loadData]);
+
+  useEffect(() => {
+    const refresh = () => setNow(new Date());
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
+    const timer = setInterval(refresh, 30 * 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(timer);
+    };
+  }, []);
 
   const handleManualSync = async () => {
     setIsSyncing(true);
@@ -82,6 +103,26 @@ function MainApp() {
       .filter(c => !allCategories.includes(c))
       .sort((a, b) => a.localeCompare(b)),
   ];
+
+  // Which month (if any) should we ask a bank balance for right now?
+  const reminderEnabled = settings.balance_reminder_enabled !== false; // on unless switched off
+  const dueReminderMonths = reminderEnabled
+    ? getDueReminderMonths(now, settings.month_balances || {}, settings.balance_reminder_skipped || [])
+        .filter(k => !snoozedMonths.includes(k))
+    : [];
+  const reminderMonth = dueReminderMonths[0] || null;
+
+  const handleSaveReminderBalance = async (monthKey, amount) => {
+    const latest = useStore.getState().settings.month_balances || {};
+    await updateSetting('month_balances', { ...latest, [monthKey]: amount });
+  };
+
+  const handleSkipReminderMonth = async (monthKey) => {
+    const latest = useStore.getState().settings.balance_reminder_skipped || [];
+    if (!latest.includes(monthKey)) {
+      await updateSetting('balance_reminder_skipped', [...latest, monthKey]);
+    }
+  };
 
   const handleEdit = (t) => {
     setEditingTransaction(t);
@@ -250,6 +291,17 @@ function MainApp() {
         />
       )}
 
+      {reminderMonth && !isSettingsOpen && (
+        <BalanceReminderModal
+          key={reminderMonth}
+          monthKey={reminderMonth}
+          remaining={dueReminderMonths.length}
+          onSave={handleSaveReminderBalance}
+          onLater={() => setSnoozedMonths(prev => [...prev, reminderMonth])}
+          onSkip={() => handleSkipReminderMonth(reminderMonth)}
+        />
+      )}
+
       {isLoansOpen && (
         <LoansModal
           onClose={() => setIsLoansOpen(false)}
@@ -273,3 +325,4 @@ function App() {
 }
 
 export default App;
+

@@ -1,3 +1,4 @@
+
 import { create } from 'zustand';
 import { db, stableUuid } from '../db/database';
 import { v4 as uuidv4 } from 'uuid';
@@ -18,6 +19,34 @@ export function isProtectedEntry(category, subcategory) {
 // The year your saved "Previous Year Monthly Balances" grid belongs to.
 // (Entered in Oct 2026 as last year's month-end balances, so 2025.)
 const PREV_BALANCES_YEAR = 2025;
+
+// ---- Automatic loan deduction for Family > Bappa ----
+// An expense under Family > Bappa ABOVE this amount (in MVR) is counted as a payment
+// towards the loan named "Dad". The transaction itself is the payment: it is simply
+// linked to that loan, so no second "Loan Repayment" transaction is created.
+// Anything at or below this amount is an ordinary expense and is not linked to a loan.
+export const BAPPA_LOAN_THRESHOLD = 1100;
+const BAPPA_LOAN_NAME = 'dad';
+
+// True if this transaction is the kind that may be deducted from the Dad loan.
+export function isBappaExpense(t) {
+  return !!t && t.type === 'Expense' && t.category === 'Family' && t.subcategory === 'Bappa';
+}
+
+// The loan named "Dad" (ignores capitals and extra spaces; ignores deleted loans).
+export function findDadLoan(loans) {
+  return (loans || []).find(
+    l => l.deleted !== true && String(l.name || '').trim().toLowerCase() === BAPPA_LOAN_NAME
+  );
+}
+
+// Which loan (uuid) should this transaction be linked to? Returns null if none.
+// `amountMvr` is the transaction amount already converted to MVR.
+export function autoLoanUuidFor(t, amountMvr, loans) {
+  if (!isBappaExpense(t)) return null;
+  if (!(Number(amountMvr) > BAPPA_LOAN_THRESHOLD)) return null;
+  return findDadLoan(loans)?.uuid || null;
+}
 
 export const useStore = create((set, get) => ({
   transactions: [],
@@ -212,9 +241,12 @@ export const useStore = create((set, get) => ({
 
   getSubcategoriesFor: (category) => {
     const { bucketMap } = get();
-    return bucketMap
-      .filter(r => r.category === category && r.deleted !== true)
-      .map(r => r.subcategory);
+    // De-duplicated so a repeated bucket-map row can't show the same option twice.
+    return [...new Set(
+      bucketMap
+        .filter(r => r.category === category && r.deleted !== true)
+        .map(r => r.subcategory)
+    )];
   },
 
   getCategories: () => {
@@ -313,8 +345,12 @@ export const useStore = create((set, get) => ({
       amount_mvr = transactionData.amount_original * currentRate;
     }
 
+    // Family > Bappa expenses above the threshold are deducted from the "Dad" loan.
+    const autoLoan = autoLoanUuidFor(transactionData, amount_mvr, get().loans);
+
     const newTransaction = {
       ...transactionData,
+      ...(isBappaExpense(transactionData) ? { loan_uuid: autoLoan } : {}),
       amount_mvr,
       exchange_rate_at_time: currentRate,
       is_historical: false,
@@ -359,6 +395,13 @@ export const useStore = create((set, get) => ({
       syncStatus: 'pending',
       updated_at: new Date().toISOString(),
     };
+
+    // Re-check the Family > Bappa loan rule whenever such a transaction is saved, so
+    // editing the amount (or moving it in/out of Bappa) keeps the Dad loan correct.
+    // Other transactions (e.g. normal Loan Repayments) are left exactly as they were.
+    if (isBappaExpense(updated)) {
+      updated.loan_uuid = autoLoanUuidFor(updated, amount_mvr, get().loans);
+    }
 
     await db.transactions.put(updated);
 
@@ -697,3 +740,4 @@ export const useStore = create((set, get) => ({
       .sort((a, b) => b.total - a.total);
   },
 }));
+
