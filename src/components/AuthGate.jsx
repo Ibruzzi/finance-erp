@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useRef } from 'react';
 import { liveQuery } from 'dexie';
 import { supabase } from '../lib/supabaseClient';
@@ -5,6 +6,7 @@ import { syncAll } from '../lib/sync';
 import { db } from '../db/database';
 import { useStore } from '../store/useStore';
 import { Loader2, Mail, AlertCircle } from 'lucide-react';
+import { LoadingScreen } from './LoadingScreen';
 
 // How long to wait after your last change before uploading it.
 const PUSH_DELAY_MS = 3000;
@@ -168,12 +170,9 @@ export function AuthGate({ children }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-blue-600">
-        <Loader2 size={32} className="animate-spin mb-4" />
-        <p className="text-sm font-semibold text-gray-500">
-          {session ? 'Syncing your data from the cloud...' : 'Loading...'}
-        </p>
-      </div>
+      <LoadingScreen
+        message={session ? 'Syncing your data from the cloud...' : 'Loading...'}
+      />
     );
   }
 
@@ -247,3 +246,4 @@ export function AuthGate({ children }) {
     </>
   );
 }
+

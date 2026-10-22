@@ -30,6 +30,8 @@ EXTENSIONS=(
     js jsx mjs cjs ts tsx html htm css scss sass less
     # Data / config / docs
     json yaml yml toml ini cfg conf xml sql md markdown txt
+    # App manifests (e.g. public/manifest.webmanifest)
+    webmanifest manifest
     # Shell scripts
     sh bash zsh
 )

@@ -7,6 +7,7 @@ import { supabase } from './lib/supabaseClient';
 import { syncAll } from './lib/sync';
 import { AuthGate } from './components/AuthGate';
 import { SyncStatus } from './components/SyncStatus';
+import { LoadingScreen } from './components/LoadingScreen';
 
 import { MonthPicker } from './components/MonthPicker';
 import { AppTabs } from './components/AppTabs';
@@ -86,7 +87,7 @@ function MainApp() {
     }
   };
 
-  if (isLoading) return <div className="p-10 text-center text-gray-500">Loading Finance ERP...</div>;
+  if (isLoading) return <LoadingScreen message="Loading Finance ERP..." />;
 
   const buckets = getBucketBalances(selectedMonth);
   const zakat = calculateZakat(selectedMonth);
