@@ -53,6 +53,7 @@ function MainApp() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState(null);
   const [prefill, setPrefill] = useState(null); // quick-add starting values
+  const [zakatExpanded, setZakatExpanded] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isZakatPaidOpen, setIsZakatPaidOpen] = useState(false);
   const [isLoansOpen, setIsLoansOpen] = useState(false);
@@ -308,16 +309,22 @@ function MainApp() {
             <QuickAddBar suggestions={quickSuggestions} onPick={openQuickAdd} />
             <RecurringSuggestions items={dueRecurring} onApprove={approveRecurring} onReject={rejectRecurring} />
 
-            <ZakatCard
-              zakat={zakat}
-              selectedMonth={selectedMonth}
-              onMarkPaid={() => setIsZakatPaidOpen(true)}
-            />
-            <TotalDebtCard
-              totalDebt={totalDebt}
-              loans={loans}
-              onManage={() => setIsLoansOpen(true)}
-            />
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className={zakatExpanded || loans.length === 0 ? 'col-span-2' : ''}>
+                <ZakatCard
+                  zakat={zakat}
+                  selectedMonth={selectedMonth}
+                  onMarkPaid={() => setIsZakatPaidOpen(true)}
+                  expanded={zakatExpanded}
+                  onToggle={() => setZakatExpanded(v => !v)}
+                />
+              </div>
+              <TotalDebtCard
+                totalDebt={totalDebt}
+                loans={loans}
+                onManage={() => setIsLoansOpen(true)}
+              />
+            </div>
             <CategoryTotals totals={totals} grandTotal={grandTotal} />
             <BucketBalances buckets={buckets} />
             <RecentTransactions

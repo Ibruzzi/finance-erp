@@ -1,16 +1,14 @@
 
-import { useState } from 'react';
 import { AlertCircle, Check, ChevronDown } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
+export function ZakatCard({ zakat, selectedMonth, onMarkPaid, expanded, onToggle }) {
   const monthName = MONTH_NAMES[parseInt(selectedMonth.slice(5, 7)) - 1];
   const year = selectedMonth.slice(0, 4);
 
-  // Starts collapsed; tap the card to see the details.
-  const [isExpanded, setIsExpanded] = useState(false);
+  const isExpanded = expanded; // controlled by the Dashboard so the card can widen when opened
 
   const stateClasses = !zakat.eligible 
     ? 'bg-gradient-to-r from-gray-400 to-gray-500' 
@@ -18,35 +16,36 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
       ? 'bg-gradient-to-r from-green-600 to-green-500' 
       : 'bg-gradient-to-r from-orange-500 to-orange-400';
 
+  // Short headlines: this card shares a row with the debt card. Details show when opened.
   const headline = zakat.noBalance
-    ? 'No balance entered'
-    : !zakat.eligible 
-    ? 'Ineligible' 
-    : zakat.fullyPaid 
-      ? `Paid ✓ (RF ${formatMoney(zakat.baseZakat)})` 
-      : `RF ${formatMoney(zakat.zakatDue)}`;
+    ? 'No balance'
+    : !zakat.eligible
+    ? 'Ineligible'
+    : zakat.fullyPaid
+    ? 'Paid ✓'
+    : `RF ${formatMoney(zakat.zakatDue)}`;
 
   return (
-    <div className={`rounded-xl shadow-md mb-3 text-white ${stateClasses}`}>
+    <div className={`rounded-xl shadow-md h-full text-white ${stateClasses}`}>
       <button
         type="button"
-        onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full p-4 text-left"
+        onClick={onToggle}
+        className="w-full p-3 text-left"
       >
         <div className="flex items-center justify-between mb-1 gap-2">
           <div className="flex items-center min-w-0">
-            <AlertCircle size={18} className="mr-2 flex-shrink-0" />
-            <span className="text-sm font-semibold truncate">
+            <AlertCircle size={16} className="mr-1.5 flex-shrink-0" />
+            <span className="text-xs font-semibold truncate">
               Zakat {monthName} {year}
             </span>
           </div>
           <ChevronDown 
-            size={18} 
+            size={16} 
             className={`flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} 
           />
         </div>
         
-        <div className="text-2xl font-bold truncate">{headline}</div>
+        <div className="text-lg font-bold truncate">{headline}</div>
       </button>
 
       {zakat.eligible && zakat.zakatDue > 0 && (
