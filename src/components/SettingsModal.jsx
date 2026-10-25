@@ -3,8 +3,10 @@ import { useState } from 'react';
 import { X, Search, ChevronLeft, ChevronRight, Trash2, Plus } from 'lucide-react';
 import { BucketDropdown } from './BucketDropdown';
 import { CustomSelect } from './CustomSelect';
+import { isCloudSyncOn, setCloudSync } from '../lib/cloudMode';
 import { isProtectedCategory, isProtectedEntry } from '../store/useStore';
 import { ImportModal } from './ImportModal';
+import { RecurringManager } from './RecurringManager';
 import { downloadBackup } from '../utils/backup';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -13,7 +15,8 @@ const NEW_CATEGORY_OPTION = '+ New category…';
 
 export function SettingsModal({
   onClose, settings, updateSetting, bucketMap, updateBucketFor, onDataChanged,
-  addCategoryEntry, removeCategoryEntry, removeWholeCategory
+  addCategoryEntry, removeCategoryEntry, removeWholeCategory,
+  getCategories, getSubcategoriesFor, loans
 }) {
   const [activeTab, setActiveTab] = useState('general');
   const [searchTerm, setSearchTerm] = useState('');
@@ -178,6 +181,7 @@ export function SettingsModal({
           <div className="flex gap-1 border-b mb-4 overflow-x-auto">
             <button onClick={() => setActiveTab('general')} className={`px-3 py-2 text-sm font-semibold whitespace-nowrap ${activeTab === 'general' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>General</button>
             <button onClick={() => setActiveTab('buckets')} className={`px-3 py-2 text-sm font-semibold whitespace-nowrap ${activeTab === 'buckets' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Bucket Map</button>
+            <button onClick={() => setActiveTab('recurring')} className={`px-3 py-2 text-sm font-semibold whitespace-nowrap ${activeTab === 'recurring' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Recurring</button>
             <button onClick={() => setActiveTab('zakat')} className={`px-3 py-2 text-sm font-semibold whitespace-nowrap ${activeTab === 'zakat' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500'}`}>Zakat Inputs</button>
           </div>
 
@@ -219,6 +223,32 @@ export function SettingsModal({
                   <span className="block text-xs text-gray-400">Off by default. Turn on to see budget usage for past months.</span>
                 </span>
               </label>
+
+              <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="text-sm font-semibold text-gray-700 mb-1">
+                  Cloud sync &amp; login: {isCloudSyncOn() ? 'ON' : 'OFF'}
+                </div>
+                <p className="text-xs text-gray-500 mb-3">
+                  {isCloudSyncOn()
+                    ? 'You sign in and your data is backed up to and synced through the cloud. Turning this off keeps everything on this device only (nothing is deleted).'
+                    : 'No login. Your data stays on this device only, so it is not backed up anywhere else. Turn this on to sign in and sync with the cloud.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const turningOn = !isCloudSyncOn();
+                    const ok = window.confirm(
+                      turningOn
+                        ? 'Turn cloud sync ON? The app will restart and ask you to sign in.'
+                        : 'Turn cloud sync OFF? The app will restart without a login. Your data stays on this device.'
+                    );
+                    if (ok) setCloudSync(turningOn);
+                  }}
+                  className="w-full bg-white border border-gray-300 text-gray-700 py-2 rounded-lg text-sm font-semibold hover:bg-gray-100"
+                >
+                  {isCloudSyncOn() ? 'Turn cloud sync off' : 'Turn cloud sync on'}
+                </button>
+              </div>
 
               <button onClick={saveGeneral} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition">Save General Settings</button>
 
@@ -362,6 +392,16 @@ export function SettingsModal({
                 Removing a category never changes past transactions.
               </p>
             </div>
+          )}
+
+          {activeTab === 'recurring' && (
+            <RecurringManager
+              rules={settings.recurring_rules || []}
+              onChange={(rules) => updateSetting('recurring_rules', rules)}
+              getCategories={getCategories}
+              getSubcategoriesFor={getSubcategoriesFor}
+              loans={loans || []}
+            />
           )}
 
           {activeTab === 'zakat' && (

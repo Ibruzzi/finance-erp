@@ -1,11 +1,14 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
 import { useStore } from './store/useStore';
 import { initSettings } from './db/database';
 import { Plus, CreditCard, Settings, RefreshCw } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 import { syncAll } from './lib/sync';
 import { AuthGate } from './components/AuthGate';
+import { isCloudSyncOn } from './lib/cloudMode';
 import { SyncStatus } from './components/SyncStatus';
 import { LoadingScreen } from './components/LoadingScreen';
 
@@ -25,6 +28,10 @@ import { RangeReport } from './components/RangeReport';
 import { InsightsTab } from './components/InsightsTab';
 import { BalanceReminderModal } from './components/BalanceReminderModal';
 import { getDueReminderMonths } from './utils/balanceReminder';
+import { getQuickAddSuggestions } from './utils/quickAdd';
+import { getDueRecurring } from './utils/recurring';
+import { QuickAddBar } from './components/QuickAddBar';
+import { RecurringSuggestions } from './components/RecurringSuggestions';
 
 const TABS = [
   { key: 'dashboard', label: 'Dashboard' },
@@ -45,11 +52,13 @@ function MainApp() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState(null);
+  const [prefill, setPrefill] = useState(null); // quick-add starting values
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isZakatPaidOpen, setIsZakatPaidOpen] = useState(false);
   const [isLoansOpen, setIsLoansOpen] = useState(false);
   const [includeHistorical, setIncludeHistorical] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const cloudOn = isCloudSyncOn(); // false = local-only mode (no login, no sync)
 
   // ---- Month-end bank balance reminder ----
   // `now` is refreshed when the app is reopened/refocused and every 30 minutes, so the
@@ -57,6 +66,30 @@ function MainApp() {
   const [now, setNow] = useState(() => new Date());
   // Months the user pressed "Remind me later" for: hidden until the app is reopened.
   const [snoozedMonths, setSnoozedMonths] = useState([]);
+
+  // Quick-add options: recomputed from your recent activity (see utils/quickAdd.js).
+  const quickSuggestions = useMemo(() => getQuickAddSuggestions(transactions, now), [transactions, now]);
+
+  // ---- Phone back button (Android app) ----
+  // Closes the top-most pop-up first, then returns to the Dashboard tab, then exits.
+  // The handler reads the latest screen state through this ref (filled in below).
+  const backRef = useRef({});
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let listener = null;
+    let cancelled = false;
+    CapacitorApp.addListener('backButton', () => {
+      const b = backRef.current;
+      if (b.reminderOpen) b.snoozeReminder();
+      else if (b.isModalOpen) b.closeAddModal();
+      else if (b.isZakatPaidOpen) b.closeZakatPaid();
+      else if (b.isLoansOpen) b.closeLoans();
+      else if (b.isSettingsOpen) b.closeSettings();
+      else if (b.activeTab !== 'dashboard') b.goDashboard();
+      else CapacitorApp.exitApp();
+    }).then((l) => { if (cancelled) l.remove(); else listener = l; });
+    return () => { cancelled = true; if (listener) listener.remove(); };
+  }, []);
 
   useEffect(() => {
     initSettings().then(() => loadData());
@@ -113,6 +146,21 @@ function MainApp() {
     : [];
   const reminderMonth = dueReminderMonths[0] || null;
 
+  backRef.current = {
+    reminderOpen: !!reminderMonth && !isSettingsOpen,
+    snoozeReminder: () => setSnoozedMonths(prev => [...prev, reminderMonth]),
+    isModalOpen,
+    closeAddModal: () => { setIsModalOpen(false); setEditingTransaction(null); setPrefill(null); },
+    isZakatPaidOpen,
+    closeZakatPaid: () => setIsZakatPaidOpen(false),
+    isLoansOpen,
+    closeLoans: () => setIsLoansOpen(false),
+    isSettingsOpen,
+    closeSettings: () => setIsSettingsOpen(false),
+    activeTab,
+    goDashboard: () => setActiveTab('dashboard'),
+  };
+
   const handleSaveReminderBalance = async (monthKey, amount) => {
     const latest = useStore.getState().settings.month_balances || {};
     await updateSetting('month_balances', { ...latest, [monthKey]: amount });
@@ -123,6 +171,41 @@ function MainApp() {
     if (!latest.includes(monthKey)) {
       await updateSetting('balance_reminder_skipped', [...latest, monthKey]);
     }
+  };
+
+  // ---- Recurring suggestions: approve (adds the transaction) or skip ----
+  const dueRecurring = getDueRecurring(settings.recurring_rules || [], now);
+
+  const markRecurring = async (ruleId, monthKey, status) => {
+    const latest = useStore.getState().settings.recurring_rules || [];
+    await updateSetting(
+      'recurring_rules',
+      latest.map(r => (r.id === ruleId ? { ...r, handled: { ...(r.handled || {}), [monthKey]: status } } : r))
+    );
+  };
+
+  const approveRecurring = async (item, amount) => {
+    const r = item.rule;
+    await addTransaction({
+      type: r.type,
+      category: r.category,
+      subcategory: r.subcategory,
+      amount_original: amount,
+      currency: r.currency,
+      bucket: r.type === 'Income' ? 'Income' : getBucketFromMap(r.category, r.subcategory),
+      notes: r.notes || r.name,
+      loan_uuid: r.loan_uuid || null,
+      date: item.dueDate.toISOString(),
+    });
+    await markRecurring(r.id, item.monthKey, 'approved');
+  };
+
+  const rejectRecurring = (item) => markRecurring(item.rule.id, item.monthKey, 'rejected');
+
+  const openQuickAdd = (s) => {
+    setEditingTransaction(null);
+    setPrefill({ type: 'Expense', category: s.category, subcategory: s.subcategory, amount_original: s.amount_original, currency: s.currency });
+    setIsModalOpen(true);
   };
 
   const handleEdit = (t) => {
@@ -169,14 +252,16 @@ function MainApp() {
             <div className="flex-1 min-w-0">
               <MonthPicker selectedMonth={selectedMonth} onChange={setSelectedMonth} />
             </div>
-            <button 
-              onClick={handleManualSync}
-              disabled={isSyncing}
-              className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0"
-              title="Sync Now"
-            >
-              <RefreshCw size={20} className={isSyncing ? "animate-spin" : ""} />
-            </button>
+            {cloudOn && (
+              <button 
+                onClick={handleManualSync}
+                disabled={isSyncing}
+                className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0"
+                title="Sync Now"
+              >
+                <RefreshCw size={20} className={isSyncing ? "animate-spin" : ""} />
+              </button>
+            )}
             <button 
               onClick={() => setIsLoansOpen(true)}
               className="p-2 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-lg flex-shrink-0 relative"
@@ -196,7 +281,7 @@ function MainApp() {
               <Settings size={20} />
             </button>
           </div>
-          <SyncStatus />
+          {cloudOn && <SyncStatus />}
         </div>
       </header>
 
@@ -216,6 +301,9 @@ function MainApp() {
                 Include Historical
               </label>
             </div>
+
+            <QuickAddBar suggestions={quickSuggestions} onPick={openQuickAdd} />
+            <RecurringSuggestions items={dueRecurring} onApprove={approveRecurring} onReject={rejectRecurring} />
 
             <ZakatCard
               zakat={zakat}
@@ -243,7 +331,7 @@ function MainApp() {
       </div>
 
       <button
-        onClick={() => { setEditingTransaction(null); setIsModalOpen(true); }}
+        onClick={() => { setEditingTransaction(null); setPrefill(null); setIsModalOpen(true); }}
         className="fixed bottom-6 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 transition-transform active:scale-95 z-20"
       >
         <Plus size={28} />
@@ -251,7 +339,7 @@ function MainApp() {
 
       {isModalOpen && (
         <AddTransactionModal
-          onClose={() => { setIsModalOpen(false); setEditingTransaction(null); }}
+          onClose={() => { setIsModalOpen(false); setEditingTransaction(null); setPrefill(null); }}
           onSave={async (data) => {
             if (editingTransaction) {
               await updateTransaction(editingTransaction.id, data);
@@ -260,9 +348,11 @@ function MainApp() {
             }
             setIsModalOpen(false);
             setEditingTransaction(null);
+            setPrefill(null);
           }}
           settings={settings}
           initialData={editingTransaction}
+          prefill={prefill}
           getBucketFromMap={getBucketFromMap}
           getSubcategoriesFor={getSubcategoriesFor}
           getCategories={getCategories}
@@ -281,6 +371,9 @@ function MainApp() {
           removeCategoryEntry={useStore.getState().removeCategoryEntry}
           removeWholeCategory={useStore.getState().removeWholeCategory}
           onDataChanged={() => useStore.getState().loadData()}
+          getCategories={getCategories}
+          getSubcategoriesFor={getSubcategoriesFor}
+          loans={loans}
         />
       )}
 

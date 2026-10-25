@@ -1,0 +1,119 @@
+Listing folders and contents in: /home/iburu/finance-erp
+Excluding: node_modules, android
+==============================================
+
+📁 assets
+----------------------------------------------
+  📄 icon-only.png
+
+📁 dist
+----------------------------------------------
+  📂 assets/
+  📄 favicon.svg
+  📂 icons/
+  📄 icons.svg
+  📄 index.html
+  📄 manifest.webmanifest
+  📄 sw.js
+
+📁 dist/assets
+----------------------------------------------
+  📄 index-CIKtu2wI.js
+  📄 index-Cit-HMLo.css
+  📄 web-BYxmvJdR.js
+
+📁 dist/icons
+----------------------------------------------
+  📄 icon-192.png
+  📄 icon-512.png
+
+
+📁 import-files
+----------------------------------------------
+  📄 2018.xlsx
+  📄 2019.xlsx
+  📄 2020.xlsx
+  📄 2021.xlsx
+  📄 2022.xlsx
+  📄 2023.xlsx
+  📄 2024.xlsx
+  📄 2025.xlsx
+  📄 2026.xlsx
+
+📁 public
+----------------------------------------------
+  📄 favicon.svg
+  📂 icons/
+  📄 icons.svg
+  📄 manifest.webmanifest
+  📄 sw.js
+
+📁 public/icons
+----------------------------------------------
+  📄 icon-192.png
+  📄 icon-512.png
+
+📁 src
+----------------------------------------------
+  📄 App.jsx
+  📂 components/
+  📂 db/
+  📂 hooks/
+  📄 index.css
+  📂 lib/
+  📄 main.jsx
+  📂 store/
+  📂 utils/
+
+📁 src/components
+----------------------------------------------
+  📄 AddTransactionModal.jsx
+  📄 AppTabs.jsx
+  📄 AuthGate.jsx
+  📄 BalanceReminderModal.jsx
+  📄 BucketBalances.jsx
+  📄 BucketDropdown.jsx
+  📄 CategoryTotals.jsx
+  📄 CustomSelect.jsx
+  📄 DatePicker.jsx
+  📄 ImportModal.jsx
+  📄 InsightsTab.jsx
+  📄 LoadingScreen.jsx
+  📄 LoanForm.jsx
+  📄 LoansModal.jsx
+  📄 MonthPicker.jsx
+  📄 RangeReport.jsx
+  📄 RecentTransactions.jsx
+  📄 SettingsModal.jsx
+  📄 SyncStatus.jsx
+  📄 TotalDebtCard.jsx
+  📄 YearlySummary.jsx
+  📄 ZakatCard.jsx
+  📄 ZakatPaidModal.jsx
+
+📁 src/db
+----------------------------------------------
+  📄 database.js
+  📄 database.with-unique-index.js
+  📄 seedData.js
+
+📁 src/hooks
+----------------------------------------------
+  📄 useClickOutside.js
+
+📁 src/lib
+----------------------------------------------
+  📄 cloudMode.js
+  📄 supabaseClient.js
+  📄 sync.js
+
+📁 src/store
+----------------------------------------------
+  📄 useStore.js
+
+📁 src/utils
+----------------------------------------------
+  📄 backup.js
+  📄 balanceReminder.js
+  📄 exportExcel.js
+  📄 format.js

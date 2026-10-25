@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Production traffic: HTTPS only, standard system trust. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!--
+        Local development / home server.
+        Plain HTTP is allowed ONLY for these hosts. Never widen these ranges
+        to a public address — if you do, Android will let any HTTP traffic
+        through and your session tokens / sync payloads travel unencrypted.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+
+        <!--
+            Private IPv4 ranges (RFC 1918). Android's <domain> tag accepts
+            hostnames, not CIDR blocks, so list the specific server IP
+            once you know it. Examples:
+              <domain>192.168.1.50</domain>
+              <domain>192.168.0.10</domain>
+            Uncomment and edit the line below when your home server is set up.
+        -->
+        <!-- <domain>192.168.1.50</domain> -->
+    </domain-config>
+</network-security-config>

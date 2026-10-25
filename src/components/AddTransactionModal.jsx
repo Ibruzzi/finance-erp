@@ -9,16 +9,17 @@ export function AddTransactionModal({
   onSave,
   settings,
   initialData,
+  prefill, // quick-add shortcut: starting values for a NEW transaction
   getBucketFromMap,
   getSubcategoriesFor,
   getCategories,
   loans,
 }) {
-  const [type, setType] = useState(initialData?.type || 'Expense');
-  const [category, setCategory] = useState(initialData?.category || 'Personal');
-  const [subcategory, setSubcategory] = useState(initialData?.subcategory || '');
-  const [amount, setAmount] = useState(initialData?.amount_original || '');
-  const [currency, setCurrency] = useState(initialData?.currency || 'MVR');
+  const [type, setType] = useState(initialData?.type || prefill?.type || 'Expense');
+  const [category, setCategory] = useState(initialData?.category || prefill?.category || 'Personal');
+  const [subcategory, setSubcategory] = useState(initialData?.subcategory || prefill?.subcategory || '');
+  const [amount, setAmount] = useState(initialData?.amount_original || prefill?.amount_original || '');
+  const [currency, setCurrency] = useState(initialData?.currency || prefill?.currency || 'MVR');
   const [notes, setNotes] = useState(initialData?.notes || '');
   const [loanUuid, setLoanUuid] = useState(initialData?.loan_uuid || '');
 
