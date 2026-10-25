@@ -1,3 +1,4 @@
+
 import { useState } from 'react';
 import { AlertCircle, Check, ChevronDown } from 'lucide-react';
 import { formatMoney } from '../utils/format';
@@ -8,8 +9,8 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
   const monthName = MONTH_NAMES[parseInt(selectedMonth.slice(5, 7)) - 1];
   const year = selectedMonth.slice(0, 4);
 
-  const defaultExpanded = (zakat.eligible && !zakat.fullyPaid) || zakat.noBalance;
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+  // Starts collapsed; tap the card to see the details.
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const stateClasses = !zakat.eligible 
     ? 'bg-gradient-to-r from-gray-400 to-gray-500' 
@@ -26,7 +27,7 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
       : `RF ${formatMoney(zakat.zakatDue)}`;
 
   return (
-    <div className={`rounded-xl shadow-md mb-6 text-white ${stateClasses}`}>
+    <div className={`rounded-xl shadow-md mb-3 text-white ${stateClasses}`}>
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
@@ -83,3 +84,4 @@ export function ZakatCard({ zakat, selectedMonth, onMarkPaid }) {
     </div>
   );
 }
+

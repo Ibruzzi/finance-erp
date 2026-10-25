@@ -281,7 +281,22 @@ function MainApp() {
               <Settings size={20} />
             </button>
           </div>
-          {cloudOn && <SyncStatus />}
+          {(cloudOn || activeTab === 'dashboard') && (
+            <div className="flex items-center justify-between gap-2 min-h-[20px]">
+              <div className="min-w-0">{cloudOn && <SyncStatus />}</div>
+              {activeTab === 'dashboard' && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 select-none flex-shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={includeHistorical}
+                    onChange={(e) => setIncludeHistorical(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  Include Historical
+                </label>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
@@ -290,18 +305,6 @@ function MainApp() {
       <div className="p-3 max-w-4xl mx-auto overflow-hidden">
         {activeTab === 'dashboard' && (
           <>
-            <div className="flex justify-end mb-2">
-              <label className="flex items-center gap-2 text-xs text-gray-600 select-none bg-white px-3 py-1.5 rounded-lg shadow-sm">
-                <input
-                  type="checkbox"
-                  checked={includeHistorical}
-                  onChange={(e) => setIncludeHistorical(e.target.checked)}
-                  className="accent-blue-600"
-                />
-                Include Historical
-              </label>
-            </div>
-
             <QuickAddBar suggestions={quickSuggestions} onPick={openQuickAdd} />
             <RecurringSuggestions items={dueRecurring} onApprove={approveRecurring} onReject={rejectRecurring} />
 
